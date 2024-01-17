@@ -1,0 +1,31 @@
+def get_epoch_generator_last_epoch():
+    return 'epochGenerator:lastEpoch'
+
+
+def get_epoch_generator_epoch_history():
+    return 'epochGenerator:epochHistory'
+
+
+# sorted set
+
+rpc_json_rpc_calls = (
+    'rpc:jsonRpc:calls'
+)
+
+rpc_get_event_logs_calls = (
+    'rpc:eventLogsCount:calls'
+)
+
+rpc_web3_calls = (
+    'rpc:web3:calls'
+)
+
+rpc_blocknumber_calls = (
+    'rpc:blocknumber:calls'
+)
+
+rpc_get_transaction_receipt_calls = (
+    'rpc:transactionReceipt:calls'
+)
+
+event_detector_last_processed_block = 'SystemEventDetector:lastProcessedBlock'
