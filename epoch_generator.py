@@ -17,7 +17,7 @@ from httpx import Limits
 from httpx import Timeout
 from redis import asyncio as aioredis
 from setproctitle import setproctitle
-from web3 import AsyncHTTPProvider
+from web3 import AsyncHTTPProvider, Web3
 from web3 import AsyncWeb3
 
 from data_models import GenericTxnIssue
@@ -33,6 +33,10 @@ from utils.notification_utils import send_failure_notifications
 from utils.redis_conn import RedisPool
 from utils.transaction_utils import write_transaction
 from utils.transaction_utils import write_transaction_with_receipt
+
+from web3.exceptions import TimeExhausted
+
+
 protocol_state_contract_address = settings.protocol_state_address
 # load abi from json file and create contract object
 with open('utils/static/abi.json', 'r') as f:
@@ -242,7 +246,7 @@ class EpochGenerator:
                                         accountAddress=settings.validator_epoch_address,
                                         epochBegin=epoch_block['begin'],
                                         issueType='EpochReleaseTxnFailed',
-                                        extra=json.dumps(receipt),
+                                        extra=Web3.to_json(receipt),
                                     )
 
                                     await send_failure_notifications(client=self._client, message=issue)
