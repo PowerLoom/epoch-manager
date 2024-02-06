@@ -1,3 +1,3 @@
-docker build -t powerloom-epoch-generator .
+docker build -t powerloom-epoch-manager .
 
 docker compose up -d
