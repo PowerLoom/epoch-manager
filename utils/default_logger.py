@@ -1,5 +1,5 @@
 from loguru import logger
-
+import sys
 # {extra} field can be used to pass extra parameters to the logger using .bind()
 FORMAT = '{time:MMMM D, YYYY > HH:mm:ss!UTC} | {level} | {message} | {extra}'
 
@@ -110,6 +110,9 @@ def logger_filter_critical(record):
 
 
 logger.remove()
+logger.add(sys.stdout, level='DEBUG', format=FORMAT)
+logger.add(sys.stderr, level='WARNING', format=FORMAT)
+logger.add(sys.stderr, level='ERROR', format=FORMAT)
 
 logger.add(
     'logs/debug.log', level='DEBUG', format=FORMAT, filter=logger_filter_debug,
