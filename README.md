@@ -83,12 +83,9 @@ Force Consensus works slightly differently than Epoch Generator and is heavily o
 Transaction tasks are then processed parallelly using the following flow
 ![Force Consensus Transaction Task Processing](/docs/images/txn_task.png)
 ## Running just Consensus service using Docker
-If you want to deploy consensus service for some reason, you can do so by following the following steps:
+If you want to deploy consensus service for some reason, you can do so by running the following command
 
-- Build the image using `./build-docker.sh`
-- Run the image using
 ```bash
- docker rm -f epoch-generator && docker run --add-host host.docker.internal:host-gateway -p 8080:8080 --name onchain-consensus -d powerloom-onchain-consensus:latest && docker logs -f epoch-generator
- ```
-This will run the consensus layer on port `9030` of your host.
+./build.sh
+```
 
