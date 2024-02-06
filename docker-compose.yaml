@@ -1,0 +1,26 @@
+version: '3.9'
+
+services:
+  epoch-generator:
+    image: powerloom-epoch-generator
+    volumes:
+      - ./logs:/logs
+    depends_on:
+      redis:
+         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  redis:
+    command: redis-server --appendonly yes
+    image: "redis:alpine"
+    expose:
+      - 6379
+    ports:
+      - 6379:6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: on-failure
