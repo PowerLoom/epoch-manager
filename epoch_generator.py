@@ -33,10 +33,6 @@ from utils.notification_utils import send_failure_notifications
 from utils.redis_conn import RedisPool
 from utils.transaction_utils import write_transaction
 from utils.transaction_utils import write_transaction_with_receipt
-
-from web3.exceptions import TimeExhausted
-
-
 protocol_state_contract_address = settings.protocol_state_address
 # load abi from json file and create contract object
 with open('utils/static/abi.json', 'r') as f:
@@ -77,7 +73,7 @@ class EpochGenerator:
     _reader_redis_pool: aioredis.Redis
     _writer_redis_pool: aioredis.Redis
 
-    def __init__(self, name='PowerLoom|EpochGenerator'):
+    def __init__(self, name='PowerLoom|OnChainConsensus|EpochGenerator'):
         self.name = name
         setproctitle(self.name)
         self._logger = logger.bind(module=self.name)
@@ -261,6 +257,7 @@ class EpochGenerator:
                                     last_contract_epoch = await self._fetch_epoch_from_contract()
                                     if last_contract_epoch != -1:
                                         begin_block_epoch = last_contract_epoch
+                                        
                                     continue
 
                             else:

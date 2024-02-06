@@ -11,22 +11,15 @@
       - [Configuring settings.json](#configuring-settingsjson)
   - [Monitoring and Debugging](#monitoring-and-debugging)
   - [Epoch Generation](#epoch-generation)
-  - [Force Consensus](#force-consensus)
-  - [Running just Consensus service using Docker](#running-just-consensus-service-using-docker)
-    - [Consensus Dashboard](#consensus-dashboard)
+
 
 ## Overview
-
-![Overall Architecture](https://github.com/PowerLoom/pooler/raw/main/pooler/static/docs/assets/OverallArchitecture.png)
-Onchain Consensus is part of the *Admin Module* in the overall architecture. It currently serves the following important roles -
-
 1. Maintains and releases `Epoch` depending on chain and use case configuration
-2. Checks and completes consensus (if necessary) by interacting with the Protocol State contract for previously released epochs after the submission window has passed
-3. Provides a set of APIs for metrics and system state statistics where snapshotters can report their issues and overall network health can be monitored
+
 
 ## Setup
 
-Onchain Consensus, currently, is only relevant to you if you're a validator. Snapshotters can just use the provided reporting URL in their configuration. But if you're a developer and want to play around with the system and build your use case, then you should follow [these instructions](https://github.com/PowerLoom/deploy#instructions-for-code-contributors) to set up the Powerloom System.
+Epoch Generator, currently, is only relevant to you if you're a validator. Snapshotters can just use the provided reporting URL in their configuration. But if you're a developer and want to play around with the system and build your use case, then you should follow [these instructions](https://github.com/PowerLoom/deploy#instructions-for-code-contributors) to set up the Powerloom System.
 
 ## Development Instructions
 
@@ -34,7 +27,7 @@ These instructions are needed if you're planning to run the system using `build-
 
 ### Generate Config
 
-The Onchain Consensus system needs the `settings.json` file to be present in the `settings` directory. We've provided `settings/settings.example.json` for you to get started. Changes are trivial. Copy `settings.example.json` to `settings.json` and make the necessary configuration changes.
+The Epoch Generator system needs the `settings.json` file to be present in the `settings` directory. We've provided `settings/settings.example.json` for you to get started. Changes are trivial. Copy `settings.example.json` to `settings.json` and make the necessary configuration changes.
 
 #### Configuring settings.json
 
@@ -56,7 +49,7 @@ Login to the Onchain Consensus Docker container using `docker exec -it <containe
 - To see logs for a specific process, run `pm2 logs <Process Identifier>`.
 - To see only error logs, run `pm2 logs --err`.
 
-Or you can simply use `docker logs -f onchain-consensus` if you don't want to go inside the docker container.
+Or you can simply use `docker logs -f epoch-generator` if you don't want to go inside the docker container.
 ## Epoch Generation
 
 An epoch denotes a range of block heights on the data source blockchain, Ethereum mainnet in the case of Uniswap v2. This makes it easier to collect state transitions and snapshots of data on equally spaced block height intervals, as well as to support future work on other lightweight anchor proof mechanisms like Merkle proofs, succinct proofs, etc.
@@ -72,24 +65,3 @@ The size of an epoch is configurable. Let that be referred to as `size(E)`.
 
 The Epoch Release process is explained in detail in the sequence diagram below
 ![Epoch Generator Sequence Diagram](/docs/images/epoch_generator.png)
-
-## Force Consensus
-
-Force consensus is an optional mechanism that can be run by anyone in the network and is designed to trigger consensus checks for projects that didn't reach consensus automatically with a 51% majority within the submission window. This will force consensus if possible if the project submissions meet all internal criteria for consensus after the submission window is closed.
-
-Force Consensus works slightly differently than Epoch Generator and is heavily optimized to handle a lot of projects. The sequence diagram explaining the flow is given below
-![Force Consensus Sequence Diagram](/docs/images/force_consensus.png)
-
-Transaction tasks are then processed parallelly using the following flow
-![Force Consensus Transaction Task Processing](/docs/images/txn_task.png)
-## Running just Consensus service using Docker
-If you want to deploy consensus service for some reason, you can do so by following the following steps:
-
-- Build the image using `./build-docker.sh`
-- Run the image using
-```bash
- docker rm -f onchain-consensus && docker run --add-host host.docker.internal:host-gateway -p 8080:8080 --name onchain-consensus -d powerloom-onchain-consensus:latest && docker logs -f onchain-consensus
- ```
-This will run the consensus layer on port `9030` of your host.
-### Consensus Dashboard
-The UI dashboard for this is hosted at [ap-consensus-dashboard](https://github.com/PowerLoom/ap-consensus-dashboard), please follow the deploy instructions there to run the UI.
