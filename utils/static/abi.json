@@ -2,8 +2,31 @@
 	{
 		"inputs": [
 			{
+				"internalType": "uint256[]",
+				"name": "slotIds",
+				"type": "uint256[]"
+			},
+			{
+				"internalType": "address[]",
+				"name": "snapshotterAddresses",
+				"type": "address[]"
+			},
+			{
+				"internalType": "uint256[]",
+				"name": "timeSlots",
+				"type": "uint256[]"
+			}
+		],
+		"name": "assignSnapshotterToSlotsWithTimeSlot",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
 				"internalType": "uint256",
-				"name": "nftId",
+				"name": "slotId",
 				"type": "uint256"
 			},
 			{
@@ -17,114 +40,7 @@
 				"type": "uint256"
 			}
 		],
-		"name": "assignSnapshotterToNftWithTimeSlot",
-		"outputs": [],
-		"stateMutability": "nonpayable",
-		"type": "function"
-	},
-	{
-		"inputs": [
-			{
-				"internalType": "uint256",
-				"name": "begin",
-				"type": "uint256"
-			},
-			{
-				"internalType": "uint256",
-				"name": "end",
-				"type": "uint256"
-			}
-		],
-		"name": "releaseEpoch",
-		"outputs": [],
-		"stateMutability": "nonpayable",
-		"type": "function"
-	},
-	{
-		"inputs": [],
-		"name": "renounceOwnership",
-		"outputs": [],
-		"stateMutability": "nonpayable",
-		"type": "function"
-	},
-	{
-		"inputs": [
-			{
-				"internalType": "string",
-				"name": "snapshotCid",
-				"type": "string"
-			},
-			{
-				"internalType": "uint256",
-				"name": "epochId",
-				"type": "uint256"
-			},
-			{
-				"internalType": "string",
-				"name": "projectId",
-				"type": "string"
-			},
-			{
-				"components": [
-					{
-						"internalType": "uint256",
-						"name": "deadline",
-						"type": "uint256"
-					},
-					{
-						"internalType": "string",
-						"name": "snapshotCid",
-						"type": "string"
-					},
-					{
-						"internalType": "uint256",
-						"name": "epochId",
-						"type": "uint256"
-					},
-					{
-						"internalType": "string",
-						"name": "projectId",
-						"type": "string"
-					}
-				],
-				"internalType": "struct PowerloomProtocolState.Request",
-				"name": "request",
-				"type": "tuple"
-			},
-			{
-				"internalType": "bytes",
-				"name": "signature",
-				"type": "bytes"
-			}
-		],
-		"name": "submitSnapshot",
-		"outputs": [],
-		"stateMutability": "nonpayable",
-		"type": "function"
-	},
-	{
-		"inputs": [],
-		"name": "toggleRewards",
-		"outputs": [],
-		"stateMutability": "nonpayable",
-		"type": "function"
-	},
-	{
-		"inputs": [],
-		"name": "toggleTimeSlotCheck",
-		"outputs": [],
-		"stateMutability": "nonpayable",
-		"type": "function"
-	},
-	{
-		"inputs": [
-			{
-				"internalType": "address",
-				"name": "newOwner",
-				"type": "address"
-			}
-		],
-		"name": "transferOwnership",
+		"name": "assignSnapshotterToSlotWithTimeSlot",
 		"outputs": [],
 		"stateMutability": "nonpayable",
 		"type": "function"
@@ -231,6 +147,12 @@
 			},
 			{
 				"indexed": false,
+				"internalType": "uint256",
+				"name": "slotId",
+				"type": "uint256"
+			},
+			{
+				"indexed": false,
 				"internalType": "string",
 				"name": "snapshotCid",
 				"type": "string"
@@ -331,13 +253,6 @@
 		"type": "function"
 	},
 	{
-		"inputs": [],
-		"name": "forceStartDay",
-		"outputs": [],
-		"stateMutability": "nonpayable",
-		"type": "function"
-	},
-	{
 		"anonymous": false,
 		"inputs": [
 			{
@@ -382,6 +297,31 @@
 		"type": "event"
 	},
 	{
+		"inputs": [
+			{
+				"internalType": "uint256",
+				"name": "begin",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "end",
+				"type": "uint256"
+			}
+		],
+		"name": "releaseEpoch",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "renounceOwnership",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
 		"anonymous": false,
 		"inputs": [
 			{
@@ -411,6 +351,18 @@
 			{
 				"indexed": false,
 				"internalType": "uint256",
+				"name": "finalizedSnapshotCount",
+				"type": "uint256"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "totalReceivedCount",
+				"type": "uint256"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
 				"name": "timestamp",
 				"type": "uint256"
 			}
@@ -426,6 +378,12 @@
 				"internalType": "address",
 				"name": "snapshotterAddr",
 				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "uint256",
+				"name": "slotId",
+				"type": "uint256"
 			},
 			{
 				"indexed": false,
@@ -456,61 +414,96 @@
 		"type": "event"
 	},
 	{
-		"anonymous": false,
 		"inputs": [
 			{
-				"indexed": false,
-				"internalType": "address",
-				"name": "validatorAddress",
-				"type": "address"
+				"internalType": "uint256",
+				"name": "slotId",
+				"type": "uint256"
 			},
 			{
-				"indexed": false,
-				"internalType": "bool",
-				"name": "allowed",
-				"type": "bool"
+				"internalType": "string",
+				"name": "snapshotCid",
+				"type": "string"
+			},
+			{
+				"internalType": "uint256",
+				"name": "epochId",
+				"type": "uint256"
+			},
+			{
+				"internalType": "string",
+				"name": "projectId",
+				"type": "string"
+			},
+			{
+				"components": [
+					{
+						"internalType": "uint256",
+						"name": "slotId",
+						"type": "uint256"
+					},
+					{
+						"internalType": "uint256",
+						"name": "deadline",
+						"type": "uint256"
+					},
+					{
+						"internalType": "string",
+						"name": "snapshotCid",
+						"type": "string"
+					},
+					{
+						"internalType": "uint256",
+						"name": "epochId",
+						"type": "uint256"
+					},
+					{
+						"internalType": "string",
+						"name": "projectId",
+						"type": "string"
+					}
+				],
+				"internalType": "struct PowerloomProtocolState.Request",
+				"name": "request",
+				"type": "tuple"
+			},
+			{
+				"internalType": "bytes",
+				"name": "signature",
+				"type": "bytes"
 			}
 		],
-		"name": "ValidatorsUpdated",
-		"type": "event"
+		"name": "submitSnapshot",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
 	},
 	{
-		"anonymous": false,
-		"inputs": [
-			{
-				"indexed": false,
-				"internalType": "address",
-				"name": "snapshotterAddress",
-				"type": "address"
-			},
-			{
-				"indexed": false,
-				"internalType": "bool",
-				"name": "allowed",
-				"type": "bool"
-			}
-		],
-		"name": "allSnapshottersUpdated",
-		"type": "event"
+		"inputs": [],
+		"name": "toggleRewards",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
 	},
 	{
-		"anonymous": false,
+		"inputs": [],
+		"name": "toggleTimeSlotCheck",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
 		"inputs": [
 			{
-				"indexed": false,
 				"internalType": "address",
-				"name": "snapshotterAddress",
+				"name": "newOwner",
 				"type": "address"
-			},
-			{
-				"indexed": false,
-				"internalType": "bool",
-				"name": "allowed",
-				"type": "bool"
 			}
 		],
-		"name": "masterSnapshottersUpdated",
-		"type": "event"
+		"name": "transferOwnership",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
 	},
 	{
 		"inputs": [
@@ -534,11 +527,11 @@
 		"inputs": [
 			{
 				"internalType": "uint256",
-				"name": "dailySnapshotQuote",
+				"name": "dailySnapshotQuota",
 				"type": "uint256"
 			}
 		],
-		"name": "updateDailySnapshotQuote",
+		"name": "updateDailySnapshotQuota",
 		"outputs": [],
 		"stateMutability": "nonpayable",
 		"type": "function"
@@ -632,6 +625,70 @@
 		"type": "function"
 	},
 	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
+				"internalType": "address",
+				"name": "validatorAddress",
+				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "bool",
+				"name": "allowed",
+				"type": "bool"
+			}
+		],
+		"name": "ValidatorsUpdated",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
+				"internalType": "address",
+				"name": "snapshotterAddress",
+				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "bool",
+				"name": "allowed",
+				"type": "bool"
+			}
+		],
+		"name": "allSnapshottersUpdated",
+		"type": "event"
+	},
+	{
+		"inputs": [],
+		"name": "forceStartDay",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": false,
+				"internalType": "address",
+				"name": "snapshotterAddress",
+				"type": "address"
+			},
+			{
+				"indexed": false,
+				"internalType": "bool",
+				"name": "allowed",
+				"type": "bool"
+			}
+		],
+		"name": "masterSnapshottersUpdated",
+		"type": "event"
+	},
+	{
 		"inputs": [
 			{
 				"internalType": "string",
@@ -697,7 +754,7 @@
 		"inputs": [
 			{
 				"internalType": "uint256",
-				"name": "nftId",
+				"name": "slotId",
 				"type": "uint256"
 			},
 			{
@@ -706,31 +763,7 @@
 				"type": "uint256"
 			}
 		],
-		"name": "checkNftTaskStatusForDay",
-		"outputs": [
-			{
-				"internalType": "bool",
-				"name": "",
-				"type": "bool"
-			}
-		],
-		"stateMutability": "view",
-		"type": "function"
-	},
-	{
-		"inputs": [
-			{
-				"internalType": "address",
-				"name": "userAddress",
-				"type": "address"
-			},
-			{
-				"internalType": "uint256",
-				"name": "day",
-				"type": "uint256"
-			}
-		],
-		"name": "checkUserTaskStatusForDay",
+		"name": "checkSlotTaskStatusForDay",
 		"outputs": [
 			{
 				"internalType": "bool",
@@ -766,7 +799,7 @@
 	},
 	{
 		"inputs": [],
-		"name": "DailySnapshotQuote",
+		"name": "DailySnapshotQuota",
 		"outputs": [
 			{
 				"internalType": "uint256",
@@ -918,17 +951,17 @@
 		"inputs": [
 			{
 				"internalType": "uint256",
-				"name": "nftId",
+				"name": "slotId",
 				"type": "uint256"
 			}
 		],
-		"name": "getNftInfo",
+		"name": "getSlotInfo",
 		"outputs": [
 			{
 				"components": [
 					{
 						"internalType": "uint256",
-						"name": "nftId",
+						"name": "slotId",
 						"type": "uint256"
 					},
 					{
@@ -962,7 +995,7 @@
 						"type": "uint256"
 					}
 				],
-				"internalType": "struct PowerloomProtocolState.NftInfo",
+				"internalType": "struct PowerloomProtocolState.SlotInfo",
 				"name": "",
 				"type": "tuple"
 			}
@@ -974,11 +1007,11 @@
 		"inputs": [
 			{
 				"internalType": "uint256",
-				"name": "nftId",
+				"name": "slotId",
 				"type": "uint256"
 			}
 		],
-		"name": "getNftStreak",
+		"name": "getSlotStreak",
 		"outputs": [
 			{
 				"internalType": "uint256",
@@ -990,27 +1023,14 @@
 		"type": "function"
 	},
 	{
-		"inputs": [],
-		"name": "getSnapshotters",
-		"outputs": [
-			{
-				"internalType": "address[]",
-				"name": "",
-				"type": "address[]"
-			}
-		],
-		"stateMutability": "view",
-		"type": "function"
-	},
-	{
 		"inputs": [
 			{
-				"internalType": "address",
-				"name": "_snapshotterAddress",
-				"type": "address"
+				"internalType": "uint256",
+				"name": "_slotId",
+				"type": "uint256"
 			}
 		],
-		"name": "getSnapshotterSlot",
+		"name": "getSnapshotterTimeSlot",
 		"outputs": [
 			{
 				"internalType": "uint256",
@@ -1180,106 +1200,31 @@
 	},
 	{
 		"inputs": [],
-		"name": "nftCounter",
-		"outputs": [
-			{
-				"internalType": "uint256",
-				"name": "",
-				"type": "uint256"
-			}
-		],
-		"stateMutability": "view",
-		"type": "function"
-	},
-	{
-		"inputs": [
-			{
-				"internalType": "uint256",
-				"name": "",
-				"type": "uint256"
-			}
-		],
-		"name": "nftRewardPoints",
-		"outputs": [
-			{
-				"internalType": "uint256",
-				"name": "",
-				"type": "uint256"
-			}
-		],
-		"stateMutability": "view",
-		"type": "function"
-	},
-	{
-		"inputs": [
-			{
-				"internalType": "uint256",
-				"name": "",
-				"type": "uint256"
-			}
-		],
-		"name": "nftSnapshotterMapping",
-		"outputs": [
-			{
-				"internalType": "address",
-				"name": "",
-				"type": "address"
-			}
-		],
-		"stateMutability": "view",
-		"type": "function"
-	},
-	{
-		"inputs": [
-			{
-				"internalType": "uint256",
-				"name": "",
-				"type": "uint256"
-			}
-		],
-		"name": "nftStreakCounter",
-		"outputs": [
-			{
-				"internalType": "uint256",
-				"name": "",
-				"type": "uint256"
-			}
-		],
-		"stateMutability": "view",
-		"type": "function"
-	},
-	{
-		"inputs": [
-			{
-				"internalType": "uint256",
-				"name": "",
-				"type": "uint256"
-			},
-			{
-				"internalType": "uint256",
-				"name": "",
-				"type": "uint256"
-			}
-		],
-		"name": "nftSubmissionCount",
-		"outputs": [
-			{
-				"internalType": "uint256",
-				"name": "",
-				"type": "uint256"
-			}
-		],
-		"stateMutability": "view",
-		"type": "function"
-	},
-	{
-		"inputs": [],
 		"name": "owner",
 		"outputs": [
 			{
 				"internalType": "address",
 				"name": "",
 				"type": "address"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "",
+				"type": "string"
+			}
+		],
+		"name": "projectFirstEpochId",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
 			}
 		],
 		"stateMutability": "view",
@@ -1337,7 +1282,101 @@
 	},
 	{
 		"inputs": [],
+		"name": "slotCounter",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "slotRewardPoints",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
 		"name": "SLOTS_PER_DAY",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "slotSnapshotterMapping",
+		"outputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "slotStreakCounter",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "slotSubmissionCount",
 		"outputs": [
 			{
 				"internalType": "uint256",
@@ -1417,6 +1456,35 @@
 				"internalType": "uint256",
 				"name": "",
 				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "snapshotsReceivedSlot",
+		"outputs": [
+			{
+				"internalType": "bool",
+				"name": "",
+				"type": "bool"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "",
+				"type": "string"
+			},
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
 			}
 		],
 		"name": "snapshotStatus",
@@ -1438,25 +1506,6 @@
 	{
 		"inputs": [],
 		"name": "snapshotSubmissionWindow",
-		"outputs": [
-			{
-				"internalType": "uint256",
-				"name": "",
-				"type": "uint256"
-			}
-		],
-		"stateMutability": "view",
-		"type": "function"
-	},
-	{
-		"inputs": [
-			{
-				"internalType": "address",
-				"name": "",
-				"type": "address"
-			}
-		],
-		"name": "snapshotterNftMapping",
 		"outputs": [
 			{
 				"internalType": "uint256",
@@ -1539,6 +1588,30 @@
 		"type": "function"
 	},
 	{
+		"inputs": [
+			{
+				"internalType": "string",
+				"name": "",
+				"type": "string"
+			},
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"name": "totalSnapshotsReceived",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
 		"inputs": [],
 		"name": "USE_BLOCK_NUMBER_AS_EPOCH_ID",
 		"outputs": [
@@ -1553,6 +1626,11 @@
 	},
 	{
 		"inputs": [
+			{
+				"internalType": "uint256",
+				"name": "slotId",
+				"type": "uint256"
+			},
 			{
 				"internalType": "string",
 				"name": "snapshotCid",
@@ -1570,6 +1648,11 @@
 			},
 			{
 				"components": [
+					{
+						"internalType": "uint256",
+						"name": "slotId",
+						"type": "uint256"
+					},
 					{
 						"internalType": "uint256",
 						"name": "deadline",

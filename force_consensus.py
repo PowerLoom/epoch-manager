@@ -69,10 +69,11 @@ class ForceConsensus:
             'SnapshotSubmitted': protocol_state_contract.events.SnapshotSubmitted._get_event_abi(),
         }
 
+
         EVENT_SIGS = {
             'EpochReleased': 'EpochReleased(uint256,uint256,uint256,uint256)',
-            'SnapshotFinalized': 'SnapshotFinalized(uint256,uint256,string,string,uint256)',
-            'SnapshotSubmitted': 'SnapshotSubmitted(address,string,uint256,string,uint256)',
+            'SnapshotFinalized': 'SnapshotFinalized(uint256,uint256,string,string,uint256,uint256,uint256)',
+            'SnapshotSubmitted': 'SnapshotSubmitted(address,uint256,string,uint256,string,uint256)',
         }
 
         self.event_sig, self.event_abi = get_event_sig_and_abi(
