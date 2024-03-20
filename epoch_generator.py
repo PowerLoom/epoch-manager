@@ -10,6 +10,7 @@ from tenacity import retry
 from tenacity import retry_if_exception_type
 from tenacity import stop_after_attempt
 from tenacity import wait_random_exponential
+import resource
 
 import uvloop
 from httpx import AsyncClient
@@ -291,6 +292,11 @@ class EpochGenerator:
 
 def main():
     """Spin up the ticker process in event loop"""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(
+        resource.RLIMIT_NOFILE,
+        (settings.rlimit.file_descriptors, hard),
+    )
     loop = uvloop.new_event_loop()
     asyncio.set_event_loop(loop)
 

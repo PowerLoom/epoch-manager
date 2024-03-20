@@ -4,6 +4,7 @@ import random
 import threading
 import time
 from collections import defaultdict
+import resource
 
 import aiorwlock
 import uvloop
@@ -12,7 +13,6 @@ from httpx import AsyncHTTPTransport
 from httpx import Limits
 from httpx import Timeout
 from redis import asyncio as aioredis
-from setproctitle import setproctitle
 from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 
@@ -43,10 +43,8 @@ class ForceConsensus:
     _reader_redis_pool: aioredis.Redis
     _writer_redis_pool: aioredis.Redis
 
-    def __init__(self, name='PowerLoom|OnChainConsensus|ForceConsensus'):
-        self.name = name
-        setproctitle(self.name)
-        self._logger = logger.bind(module=self.name)
+    def __init__(self, name='ForceConsensus'):
+        self._logger = logger.bind(module=name)
         self._shutdown_initiated = False
         self.last_sent_block = 0
         self._end = None
@@ -129,6 +127,8 @@ class ForceConsensus:
             settings.force_consensus_address,
         )
         await self._init_httpx_client()
+
+        self._submission_window = await protocol_state_contract.functions.snapshotSubmissionWindow().call()
 
     async def _init_httpx_client(self):
         if self._async_transport is not None:
@@ -243,8 +243,8 @@ class ForceConsensus:
         epochs_to_process = []
         epochs_to_remove = set()
         for release_time, epoch in self._pending_epochs:
-            # anchor chain block time is 2 but using 2.5 for additional buffer
-            if release_time + (self._submission_window * 2.5) < time.time():
+            # anchor chain block time + 30 seconds buffer
+            if release_time + (self._submission_window * settings.anchor_chain.block_time) + 30 < time.time():
                 epochs_to_process.append(epoch)
                 epochs_to_remove.add((release_time, epoch))
 
@@ -257,7 +257,7 @@ class ForceConsensus:
             for epochId in epochs_to_process:
                 projects_to_process = self._projects_submitted_for_epoch[epochId] - self._finalized_epochs[epochId]
                 self._logger.info(
-                    'Force completing consensus for projects: {}', projects_to_process,
+                    'Force completing consensus for {} projects', len(projects_to_process),
                 )
 
                 for project in projects_to_process:
@@ -265,8 +265,10 @@ class ForceConsensus:
 
             results = await asyncio.gather(*txn_tasks, return_exceptions=True)
 
-            del self._finalized_epochs[epochId]
-            del self._projects_submitted_for_epoch[epochId]
+            if self._finalized_epochs[epochId]:
+                del self._finalized_epochs[epochId]
+            if self._projects_submitted_for_epoch[epochId]:
+                del self._projects_submitted_for_epoch[epochId]
 
             for result in results:
                 if isinstance(result, Exception):
@@ -277,9 +279,6 @@ class ForceConsensus:
     async def run(self):
 
         await self.setup()
-
-        if self._submission_window == 0:
-            self._submission_window = await protocol_state_contract.functions.snapshotSubmissionWindow().call()
 
         while True:
             try:
@@ -309,53 +308,32 @@ class ForceConsensus:
                     self._last_processed_block = json.loads(
                         last_processed_block_data,
                     )
+                else:
+                    self._last_processed_block = current_block - 1
 
-            if self._last_processed_block:
-                if current_block - self._last_processed_block >= 10:
-                    self._logger.warning(
-                        'Last processed block is too far behind current block, '
-                        'processing current block',
-                    )
-                    self._last_processed_block = current_block - 10
-
-                # Get events from current block to last_processed_block
-                try:
-                    await self.get_events(self._last_processed_block, current_block)
-                except Exception as e:
-                    self._logger.opt(exception=True).error(
-                        (
-                            'Unable to fetch events from block {} to block {}, '
-                            'ERROR: {}, sleeping for {} seconds.'
-                        ),
-                        self._last_processed_block + 1,
-                        current_block,
-                        e,
-                        settings.anchor_chain.polling_interval,
-                    )
-                    await asyncio.sleep(settings.anchor_chain.polling_interval)
-                    continue
-
-            else:
-
-                self._logger.debug(
-                    'No last processed epoch found, processing current block',
+            if current_block - self._last_processed_block >= settings.anchor_chain.max_block_buffer:
+                self._logger.warning(
+                    'Last processed block is too far behind current block, '
+                    'processing current block',
                 )
+                self._last_processed_block = current_block - settings.anchor_chain.max_block_buffer
 
-                try:
-                    await self.get_events(current_block, current_block)
-                except Exception as e:
-                    self._logger.opt(exception=True).error(
-                        (
-                            'Unable to fetch events from block {} to block {}, '
-                            'ERROR: {}, sleeping for {} seconds.'
-                        ),
-                        current_block,
-                        current_block,
-                        e,
-                        settings.anchor_chain.polling_interval,
-                    )
-                    await asyncio.sleep(settings.anchor_chain.polling_interval)
-                    continue
+            # Get events from current block to last_processed_block
+            try:
+                await self.get_events(self._last_processed_block + 1, current_block)
+            except Exception as e:
+                self._logger.opt(exception=True).error(
+                    (
+                        'Unable to fetch events from block {} to block {}, '
+                        'ERROR: {}, sleeping for {} seconds.'
+                    ),
+                    self._last_processed_block + 1,
+                    current_block,
+                    e,
+                    settings.anchor_chain.polling_interval,
+                )
+                await asyncio.sleep(settings.anchor_chain.polling_interval)
+                continue
 
             self._last_processed_block = current_block
 
@@ -373,6 +351,12 @@ class ForceConsensus:
 
 def main():
     """Spin up the ticker process in event loop"""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(
+        resource.RLIMIT_NOFILE,
+        (settings.rlimit.file_descriptors, hard),
+    )
+
     loop = uvloop.new_event_loop()
     asyncio.set_event_loop(loop)
     force_consensus_process = ForceConsensus()
