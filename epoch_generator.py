@@ -25,7 +25,7 @@ from exceptions import GenericExitOnSignal
 from helpers.message_models import RPCNodesObject
 from helpers.rpc_helper import ConstructRPC
 from settings.conf import settings
-from utils.chunk_helper import chunks
+from utils.helpers import chunks
 from utils.default_logger import logger
 from utils.notification_utils import send_failure_notifications
 from utils.transaction_utils import write_transaction
