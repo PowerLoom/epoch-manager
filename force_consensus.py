@@ -194,7 +194,10 @@ class ForceConsensus:
 
                 if not receipt or receipt['status'] != 1:
                     self._logger.error(
-                        'Unable to force complete consensus for project: {}, error: {}',
+                        'Unable to force complete consensus for project: {}, epoch: {}, txhash: {}',
+                        project,
+                        epochId,
+                        tx_hash,
                     )
 
                     issue = GenericTxnIssue(
