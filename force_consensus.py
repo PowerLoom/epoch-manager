@@ -66,6 +66,7 @@ class ForceConsensus:
         self._async_transport = None
         self._projects_submitted_for_epoch = defaultdict(set)
         self._finalized_epochs = defaultdict(set)
+        self.gas = settings.anchor_chain.default_gas_in_gwei
 
         EVENTS_ABI = {
             'EpochReleased': protocol_state_contract.events.EpochReleased._get_event_abi(),
@@ -108,6 +109,9 @@ class ForceConsensus:
         for log in events_log:
             if log['event'] == 'EpochReleased':
                 self._pending_epochs.add((time.time(), log['args']['epochId']))
+                self._logger.info(
+                    'Epoch release detected, adding epoch: {} to pending epochs', log['args']['epochId'],
+                )
             elif log['event'] == 'SnapshotFinalized':
                 self._finalized_epochs[log['args']['epochId']].add(log['args']['projectId'])
             elif log['event'] == 'SnapshotSubmitted':
@@ -167,6 +171,7 @@ class ForceConsensus:
             protocol_state_contract,
             'forceCompleteConsensusSnapshot',
             self._nonce,
+            self.gas,
             project,
             epochId,
         )
