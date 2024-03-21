@@ -16,16 +16,22 @@ from redis import asyncio as aioredis
 from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 
+from tenacity import retry
+from tenacity import retry_if_exception_type
+from tenacity import stop_after_attempt
+from tenacity import wait_random_exponential
+
 from data_models import GenericTxnIssue
 from helpers.redis_keys import event_detector_last_processed_block
 from rpc import get_event_sig_and_abi
 from rpc import RpcHelper
 from settings.conf import settings
 from utils.default_logger import logger
+from utils.helpers import semaphore_then_aiorwlock_aqcuire_release
+from utils.helpers import aiorwlock_aqcuire_release
 from utils.notification_utils import send_failure_notifications
 from utils.redis_conn import RedisPool
 from utils.transaction_utils import write_transaction
-from utils.transaction_utils import write_transaction_with_receipt
 protocol_state_contract_address = settings.protocol_state_address
 
 # load abi from json file and create contract object
@@ -146,70 +152,49 @@ class ForceConsensus:
             transport=self._async_transport,
         )
 
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(Exception),
+        wait=wait_random_exponential(multiplier=1, max=10),
+        stop=stop_after_attempt(settings.anchor_chain.rpc.retry),
+    )
+    @semaphore_then_aiorwlock_aqcuire_release
+    async def _make_transaction(self, project, epochId):
+        tx_hash = await write_transaction(
+            w3,
+            settings.force_consensus_address,
+            settings.force_consensus_private_key,
+            protocol_state_contract,
+            'forceCompleteConsensusSnapshot',
+            self._nonce,
+            project,
+            epochId,
+        )
+        self._nonce += 1
+        return tx_hash
+
+    @aiorwlock_aqcuire_release
+    async def _reset_nonce(self):
+        self._logger.info('Resetting nonce')
+        # sleep for 15 seconds to avoid nonce collision
+        time.sleep(15)
+
+        self._nonce = await w3.eth.get_transaction_count(
+                settings.force_consensus_address,
+            )
+
     async def _call_force_complete_consensus(self, project, epochId):
-        async with self._semaphore:
-            if await protocol_state_contract.functions.checkDynamicConsensusSnapshot(
-                project, epochId,
-            ).call():
+        try:
+            rand = random.choice(range(0, 100))
+            # check receipt and heal if needed 1% of the time
+            tx_hash = await self._make_transaction(project, epochId)
 
-                try:
-                    async with self._rwlock.writer_lock:
-                        rand = random.random()
-                        # check receipt and heal if needed 1% of the time
-                        if rand < 0.01:
-                            tx_hash, receipt = await write_transaction_with_receipt(
-                                w3,
-                                settings.force_consensus_address,
-                                settings.force_consensus_private_key,
-                                protocol_state_contract,
-                                'forceCompleteConsensusSnapshot',
-                                self._nonce,
-                                project,
-                                epochId,
-                            )
+            if rand == 1:
+                receipt = await w3.eth.wait_for_transaction_receipt(tx_hash)
 
-                            if receipt['status'] != 1:
-                                self._logger.error(
-                                    'Unable to force complete consensus for project: {}, error: {}',
-                                )
-
-                                issue = GenericTxnIssue(
-                                    accountAddress=settings.force_consensus_address,
-                                    epochId=epochId,
-                                    issueType='ForceConsensusTxnFailed',
-                                    projectId=project,
-                                    extra=json.dumps(receipt),
-                                )
-
-                                await send_failure_notifications(
-                                    client=self._client,
-                                    message=issue,
-                                )
-
-                                time.sleep(5)
-                                self._nonce = await w3.eth.get_transaction_count(
-                                    settings.force_consensus_address,
-                                )
-                                raise Exception('Transaction failed!')
-                        else:
-
-                            tx_hash = await write_transaction(
-                                w3,
-                                settings.force_consensus_address,
-                                settings.force_consensus_private_key,
-                                protocol_state_contract,
-                                'forceCompleteConsensusSnapshot',
-                                self._nonce,
-                                project,
-                                epochId,
-                            )
-                    self._nonce += 1
-                    self._logger.info(
-                        'Force completing consensus for project: {}, epoch: {}, txhash: {}', project, epochId, tx_hash,
-                    )
-                except Exception as ex:
+                if not receipt or receipt['status'] != 1:
                     self._logger.error(
-                        'Unable to force complete consensus for project: {}, error: {}', project, ex,
+                        'Unable to force complete consensus for project: {}, error: {}',
                     )
 
                     issue = GenericTxnIssue(
@@ -217,27 +202,39 @@ class ForceConsensus:
                         epochId=epochId,
                         issueType='ForceConsensusTxnFailed',
                         projectId=project,
-                        extra=str(ex),
+                        extra=json.dumps(receipt),
                     )
 
                     await send_failure_notifications(
                         client=self._client,
                         message=issue,
                     )
-                    # reset nonce
-                    async with self._rwlock.writer_lock:
-                        # sleep for 5 seconds to avoid nonce collision
 
-                        time.sleep(5)
-                        self._nonce = await w3.eth.get_transaction_count(
-                            settings.force_consensus_address,
-                        )
+                    await self._reset_nonce()
+                    raise Exception('Transaction failed!')
 
-                        raise ex
-            else:
-                self._logger.info(
-                    'Consensus already achieved for project: {}', project,
-                )
+            self._logger.info(
+                'Force completing consensus for project: {}, epoch: {}, txhash: {}', project, epochId, tx_hash,
+            )
+        except Exception as ex:
+            self._logger.error(
+                'Unable to force complete consensus for project: {}, error: {}', project, ex,
+            )
+
+            issue = GenericTxnIssue(
+                accountAddress=settings.force_consensus_address,
+                epochId=epochId,
+                issueType='ForceConsensusTxnFailed',
+                projectId=project,
+                extra=str(ex),
+            )
+
+            await send_failure_notifications(
+                client=self._client,
+                message=issue,
+            )
+
+            await self._reset_nonce()
 
     async def _force_complete_consensus(self):
         epochs_to_process = []
