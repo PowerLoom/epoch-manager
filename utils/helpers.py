@@ -33,7 +33,7 @@ def semaphore_then_aiorwlock_aqcuire_release(fn):
             self._semaphore.release()
             raise e
         try:
-            await fn(self, *args, **kwargs)
+            tx_hash = await fn(self, *args, **kwargs)
             # release semaphore
             try:
                 self._semaphore.release()
@@ -48,6 +48,9 @@ def semaphore_then_aiorwlock_aqcuire_release(fn):
             # this is ultimately reraised by tenacity once the retries are exhausted
             # nothing to do here
             raise e
+
+        else:
+            return tx_hash
 
     return wrapper
 
