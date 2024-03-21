@@ -323,6 +323,13 @@ class ForceConsensus:
                 )
                 self._last_processed_block = current_block - settings.anchor_chain.max_block_buffer
 
+            if self.last_sent_block == current_block:
+                self._logger.info(
+                    'No new blocks detected, sleeping for {} seconds...',
+                    settings.anchor_chain.polling_interval,
+                )
+                await asyncio.sleep(settings.anchor_chain.polling_interval)
+                continue
             # Get events from current block to last_processed_block
             try:
                 await self.get_events(self._last_processed_block + 1, current_block)
