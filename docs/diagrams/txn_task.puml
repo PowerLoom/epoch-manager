@@ -4,30 +4,22 @@ alt transaction_task for project and epochId from TxnTasks
         ForceConsensus -> Semaphore : Acquire semaphore
         Semaphore --> ForceConsensus : Semaphore acquired
 
-        ForceConsensus -> ProtocolStateContract : Get project consensus state
-        alt need to call forceConsensus()
+        ForceConsensus -> RWLock : Acquire write lock
+        RWLock --> ForceConsensus : Write lock acquired
 
-            ForceConsensus -> RWLock : Acquire write lock
-            RWLock --> ForceConsensus : Write lock acquired
+        alt 99% of the time
+            ForceConsensus -> ProtocolStateContract : Make Force consensus transaction
 
-            alt 99% of the time
-                ForceConsensus -> ProtocolStateContract : Force consensus
-
-            else 1% of the time
-                ForceConsensus -> ProtocolStateContract : Force Consensus and wait for txn receipt
-                alt txn successful
-                    ForceConsensus -> ForceConsensus : Log info message
-                else txn failed
-                    ForceConsensus -> ForceConsensus : Log info message
-                    ForceConsensus -> ForceConsensus : Reset Nonce
-                end
+        else 1% of the time
+            ForceConsensus -> ProtocolStateContract : Make Force Consensus transaction and wait for txn receipt
+            alt txn successful
+                ForceConsensus -> ForceConsensus : Log info message
+            else txn failed
+                ForceConsensus -> ForceConsensus : Log info message
+                ForceConsensus -> ForceConsensus : Sleep 30 seconds and Reset Nonce
             end
-
-            ForceConsensus -> RWLock : Release write lock
-
-        else no need to call forceConsensus()
-
-            ForceConsensus -> ForceConsensus : Log info message
         end
+
+        ForceConsensus -> RWLock : Release write lock
 end
 @enduml

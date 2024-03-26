@@ -23,7 +23,7 @@ loop
                 EpochGenerator --> ProtocolStateContract : write epoch release transaction and wait for receipt
                 ProtocolStateContract --> EpochGenerator : Transaction receipt
                 alt transaction failed
-                    EpochGenerator --> EpochGenerator : Sleep for 30 seconds, then reset nonce and epoch head
+                    EpochGenerator --> EpochGenerator : Sleep for 30 seconds, then reset nonce and epoch head, then try again
                 else transaction succeeded
                     EpochGenerator --> EpochGenerator : Increment nonce
                 end
@@ -31,7 +31,6 @@ loop
                 EpochGenerator --> ProtocolStateContract : write epoch release transaction
                 EpochGenerator --> EpochGenerator : Increment nonce
             end
-            EpochGenerator --> RedisPool : Set last_sent_block and epoch history, and cleanup
 
         end
     end
@@ -42,7 +41,6 @@ note right
 end note
 
 alt shutdown signal received
-    EpochGenerator --> RedisPool : Cleanup and Save State
     EpochGenerator --> Main : Shutdown
 end
 

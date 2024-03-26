@@ -220,8 +220,8 @@ class EpochGenerator:
 
                                     await send_failure_notifications(client=self._client, message=issue)
 
-                                    # sleep for 60 seconds to avoid nonce collision
-                                    time.sleep(60)
+                                    # sleep for 30 seconds to avoid nonce collision
+                                    time.sleep(30)
                                     # reset nonce
                                     self._nonce = await w3.eth.get_transaction_count(
                                         settings.validator_epoch_address,
@@ -230,6 +230,7 @@ class EpochGenerator:
                                     last_contract_epoch = await self._fetch_epoch_from_contract()
                                     if last_contract_epoch != -1:
                                         begin_block_epoch = last_contract_epoch
+                                    self._force_tx = True
                                     break
                                 else:
                                     self._force_tx = False
@@ -268,7 +269,7 @@ class EpochGenerator:
                             await send_failure_notifications(client=self._client, message=issue)
 
                             # sleep for 30 seconds to avoid nonce collision
-                            time.sleep(60)
+                            time.sleep(30)
                             # reset nonce
                             self._nonce = await w3.eth.get_transaction_count(
                                 settings.validator_epoch_address,

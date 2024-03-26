@@ -182,11 +182,11 @@ class ForceConsensus:
     async def _reset_nonce(self):
         self._logger.info('Resetting nonce')
         # sleep for 15 seconds to avoid nonce collision
-        time.sleep(15)
+        time.sleep(30)
 
         self._nonce = await w3.eth.get_transaction_count(
                 settings.force_consensus_address,
-            )
+        )
 
     async def _call_force_complete_consensus(self, project, epochId):
         try:
