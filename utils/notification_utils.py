@@ -8,7 +8,7 @@ from utils.default_logger import logger
 
 
 logger = logger.bind(
-    module='PowerLoom|OnChainConsensus|NotificationUtils',
+    module='NotificationUtils',
 )
 
 

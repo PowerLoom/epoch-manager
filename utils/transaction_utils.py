@@ -2,7 +2,7 @@ from settings.conf import settings
 CHAIN_ID = settings.anchor_chain.chain_id
 
 
-async def write_transaction(w3, address, private_key, contract, function, nonce, *args):
+async def write_transaction(w3, address, private_key, contract, function, nonce, gas, *args):
     """ Writes a transaction to the blockchain
 
     Args:
@@ -22,7 +22,7 @@ async def write_transaction(w3, address, private_key, contract, function, nonce,
     transaction = await func(*args).build_transaction({
         'from': address,
         'gas': 2000000,
-        'gasPrice': w3.to_wei('1', 'gwei'),
+        'gasPrice': w3.to_wei(str(gas), 'gwei'),
         'nonce': nonce,
         'chainId': CHAIN_ID,
     })
@@ -36,7 +36,7 @@ async def write_transaction(w3, address, private_key, contract, function, nonce,
     return tx_hash.hex()
 
 
-async def write_transaction_with_receipt(w3, address, private_key, contract, function, nonce, *args):
+async def write_transaction_with_receipt(w3, address, private_key, contract, function, nonce, gas, *args):
     """ Writes a transaction using write_transaction, wait for confirmation and retry doubling gas price if failed
 
     Args:
@@ -51,7 +51,7 @@ async def write_transaction_with_receipt(w3, address, private_key, contract, fun
         str: The transaction hash
     """
     tx_hash = await write_transaction(
-        w3, address, private_key, contract, function, nonce, *args,
+        w3, address, private_key, contract, function, nonce, gas, *args,
     )
 
     # Wait for confirmation

@@ -1,0 +1,73 @@
+@startuml Main
+
+Main --> ForceConsensus : Start
+
+ProtocolStateContract --> ForceConsensus : get Submission Window
+
+ForceConsensus --> RpcHelper : rpc_helper
+
+loop
+    ForceConsensus --> rpc_helper : rpc_eth_blocknumber()
+    rpc_helper --> ForceConsensus : current head of chain (cur_block)
+
+    alt last processed block not set
+        ForceConsensus --> Redis : Get last processed block
+
+        alt last processed block not set
+            ForceConsensus --> ProtocolStateContract:  Get Epoch Released Events for current head of chain - 1
+        else last processed block set
+            alt last processed block is not too far behind
+                ForceConsensus --> ProtocolStateContract:  Get Epoch Released Events from last processed block to current head of chain
+                ForceConsensus --> ProtocolStateContract:  Get Project Finalized Events from last processed block to current head of chain
+                ForceConsensus --> ProtocolStateContract:  Get Project Submitted Events from last processed block to current head of chain
+            else last processed block is too far behind
+                ForceConsensus --> ProtocolStateContract:  Get Epoch Released Events from current head - max_block_buffer (from settings) to current head of chain
+                ForceConsensus --> ProtocolStateContract:  Get Project Finalized Events from current head - max_block_buffer (from settings) to current head of chain
+                ForceConsensus --> ProtocolStateContract:  Get Project Submitted Events from current head - max_block_buffer (from settings) to current head of chain
+            end
+            ForceConsensus --> Redis : Set last processed block to last processed block
+        end
+
+    ForceConsensus --> PendingEpochs: add Epoch Released Events to pending epochs set
+
+
+end
+
+note right
+    Check for shutdown signals
+end note
+
+
+alt shutdown signal received
+    ForceConsensus --> Main : Shutdown
+end
+
+
+alt Force Complete Consensus for pending epochs
+PendingEpochs --> ForceConsensus : Get pending epochs and filter for epochs that has passed submission window
+
+loop for each epochId in epochs to process
+    loop for each Project in projects (submitted but not finalized)
+        ForceConsensus -> TxnTasks : Create transaction task for project and epochId
+    end
+    ForceConsensus -> ForceConsensus : Clean up finalized projects and submitted projects for epoch
+end
+TxnTasks --> ForceConsensus : Transaction tasks
+
+ForceConsensus -> Results : Gather results of forced consensus transactions
+Results --> ForceConsensus : Results of forced consensus
+ForceConsensus --> PendingEpochs : Update pending epochs set
+
+loop for each result in results
+    alt transaction success
+        ForceConsensus -> ForceConsensus : Log success message
+    else transaction failed
+        ForceConsensus -> ForceConsensus : Log error message
+    end
+end
+
+end
+
+note right
+    Force Complete Consensus for pending epochs
+end note

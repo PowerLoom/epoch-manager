@@ -48,6 +48,9 @@
 			  "keepalive_expiry": 300
 			}
 		  },
+		"default_gas_in_gwei": 0.0001,
+		"block_time": 1,
+		"max_block_buffer": 20,
 		"chain_id": 102,
 		"polling_interval":2
 	},

@@ -4,6 +4,7 @@ import random
 import threading
 import time
 from collections import defaultdict
+import resource
 
 import aiorwlock
 import uvloop
@@ -12,9 +13,13 @@ from httpx import AsyncHTTPTransport
 from httpx import Limits
 from httpx import Timeout
 from redis import asyncio as aioredis
-from setproctitle import setproctitle
 from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
+
+from tenacity import retry
+from tenacity import retry_if_exception_type
+from tenacity import stop_after_attempt
+from tenacity import wait_random_exponential
 
 from data_models import GenericTxnIssue
 from helpers.redis_keys import event_detector_last_processed_block
@@ -22,10 +27,11 @@ from rpc import get_event_sig_and_abi
 from rpc import RpcHelper
 from settings.conf import settings
 from utils.default_logger import logger
+from utils.helpers import semaphore_then_aiorwlock_aqcuire_release
+from utils.helpers import aiorwlock_aqcuire_release
 from utils.notification_utils import send_failure_notifications
 from utils.redis_conn import RedisPool
 from utils.transaction_utils import write_transaction
-from utils.transaction_utils import write_transaction_with_receipt
 protocol_state_contract_address = settings.protocol_state_address
 
 # load abi from json file and create contract object
@@ -43,10 +49,8 @@ class ForceConsensus:
     _reader_redis_pool: aioredis.Redis
     _writer_redis_pool: aioredis.Redis
 
-    def __init__(self, name='PowerLoom|OnChainConsensus|ForceConsensus'):
-        self.name = name
-        setproctitle(self.name)
-        self._logger = logger.bind(module=self.name)
+    def __init__(self, name='ForceConsensus'):
+        self._logger = logger.bind(module=name)
         self._shutdown_initiated = False
         self.last_sent_block = 0
         self._end = None
@@ -62,6 +66,7 @@ class ForceConsensus:
         self._async_transport = None
         self._projects_submitted_for_epoch = defaultdict(set)
         self._finalized_epochs = defaultdict(set)
+        self.gas = settings.anchor_chain.default_gas_in_gwei
 
         EVENTS_ABI = {
             'EpochReleased': protocol_state_contract.events.EpochReleased._get_event_abi(),
@@ -69,10 +74,11 @@ class ForceConsensus:
             'SnapshotSubmitted': protocol_state_contract.events.SnapshotSubmitted._get_event_abi(),
         }
 
+
         EVENT_SIGS = {
             'EpochReleased': 'EpochReleased(uint256,uint256,uint256,uint256)',
-            'SnapshotFinalized': 'SnapshotFinalized(uint256,uint256,string,string,uint256)',
-            'SnapshotSubmitted': 'SnapshotSubmitted(address,string,uint256,string,uint256)',
+            'SnapshotFinalized': 'SnapshotFinalized(uint256,uint256,string,string,uint256,uint256,uint256)',
+            'SnapshotSubmitted': 'SnapshotSubmitted(address,uint256,string,uint256,string,uint256)',
         }
 
         self.event_sig, self.event_abi = get_event_sig_and_abi(
@@ -103,6 +109,9 @@ class ForceConsensus:
         for log in events_log:
             if log['event'] == 'EpochReleased':
                 self._pending_epochs.add((time.time(), log['args']['epochId']))
+                self._logger.info(
+                    'Epoch release detected, adding epoch: {} to pending epochs', log['args']['epochId'],
+                )
             elif log['event'] == 'SnapshotFinalized':
                 self._finalized_epochs[log['args']['epochId']].add(log['args']['projectId'])
             elif log['event'] == 'SnapshotSubmitted':
@@ -129,6 +138,8 @@ class ForceConsensus:
         )
         await self._init_httpx_client()
 
+        self._submission_window = await protocol_state_contract.functions.snapshotSubmissionWindow().call()
+
     async def _init_httpx_client(self):
         if self._async_transport is not None:
             return
@@ -145,70 +156,53 @@ class ForceConsensus:
             transport=self._async_transport,
         )
 
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(Exception),
+        wait=wait_random_exponential(multiplier=1, max=10),
+        stop=stop_after_attempt(settings.anchor_chain.rpc.retry),
+    )
+    @semaphore_then_aiorwlock_aqcuire_release
+    async def _make_transaction(self, project, epochId):
+        tx_hash = await write_transaction(
+            w3,
+            settings.force_consensus_address,
+            settings.force_consensus_private_key,
+            protocol_state_contract,
+            'forceCompleteConsensusSnapshot',
+            self._nonce,
+            self.gas,
+            project,
+            epochId,
+        )
+        self._nonce += 1
+        return tx_hash
+
+    @aiorwlock_aqcuire_release
+    async def _reset_nonce(self):
+        self._logger.info('Resetting nonce')
+        # sleep for 15 seconds to avoid nonce collision
+        time.sleep(30)
+
+        self._nonce = await w3.eth.get_transaction_count(
+                settings.force_consensus_address,
+        )
+
     async def _call_force_complete_consensus(self, project, epochId):
-        async with self._semaphore:
-            if await protocol_state_contract.functions.checkDynamicConsensusSnapshot(
-                project, epochId,
-            ).call():
+        try:
+            rand = random.choice(range(0, 100))
+            # check receipt and heal if needed 1% of the time
+            tx_hash = await self._make_transaction(project, epochId)
 
-                try:
-                    async with self._rwlock.writer_lock:
-                        rand = random.random()
-                        # check receipt and heal if needed 1% of the time
-                        if rand < 0.01:
-                            tx_hash, receipt = await write_transaction_with_receipt(
-                                w3,
-                                settings.force_consensus_address,
-                                settings.force_consensus_private_key,
-                                protocol_state_contract,
-                                'forceCompleteConsensusSnapshot',
-                                self._nonce,
-                                project,
-                                epochId,
-                            )
+            if rand == 1:
+                receipt = await w3.eth.wait_for_transaction_receipt(tx_hash)
 
-                            if receipt['status'] != 1:
-                                self._logger.error(
-                                    'Unable to force complete consensus for project: {}, error: {}',
-                                )
-
-                                issue = GenericTxnIssue(
-                                    accountAddress=settings.force_consensus_address,
-                                    epochId=epochId,
-                                    issueType='ForceConsensusTxnFailed',
-                                    projectId=project,
-                                    extra=json.dumps(receipt),
-                                )
-
-                                await send_failure_notifications(
-                                    client=self._client,
-                                    message=issue,
-                                )
-
-                                time.sleep(5)
-                                self._nonce = await w3.eth.get_transaction_count(
-                                    settings.force_consensus_address,
-                                )
-                                raise Exception('Transaction failed!')
-                        else:
-
-                            tx_hash = await write_transaction(
-                                w3,
-                                settings.force_consensus_address,
-                                settings.force_consensus_private_key,
-                                protocol_state_contract,
-                                'forceCompleteConsensusSnapshot',
-                                self._nonce,
-                                project,
-                                epochId,
-                            )
-                    self._nonce += 1
-                    self._logger.info(
-                        'Force completing consensus for project: {}, epoch: {}, txhash: {}', project, epochId, tx_hash,
-                    )
-                except Exception as ex:
+                if not receipt or receipt['status'] != 1:
                     self._logger.error(
-                        'Unable to force complete consensus for project: {}, error: {}', project, ex,
+                        'Unable to force complete consensus for project: {}, epoch: {}, txhash: {}',
+                        project,
+                        epochId,
+                        tx_hash,
                     )
 
                     issue = GenericTxnIssue(
@@ -216,34 +210,46 @@ class ForceConsensus:
                         epochId=epochId,
                         issueType='ForceConsensusTxnFailed',
                         projectId=project,
-                        extra=str(ex),
+                        extra=json.dumps(receipt),
                     )
 
                     await send_failure_notifications(
                         client=self._client,
                         message=issue,
                     )
-                    # reset nonce
-                    async with self._rwlock.writer_lock:
-                        # sleep for 5 seconds to avoid nonce collision
 
-                        time.sleep(5)
-                        self._nonce = await w3.eth.get_transaction_count(
-                            settings.force_consensus_address,
-                        )
+                    await self._reset_nonce()
+                    raise Exception('Transaction failed!')
 
-                        raise ex
-            else:
-                self._logger.info(
-                    'Consensus already achieved for project: {}', project,
-                )
+            self._logger.info(
+                'Force completing consensus for project: {}, epoch: {}, txhash: {}', project, epochId, tx_hash,
+            )
+        except Exception as ex:
+            self._logger.error(
+                'Unable to force complete consensus for project: {}, error: {}', project, ex,
+            )
+
+            issue = GenericTxnIssue(
+                accountAddress=settings.force_consensus_address,
+                epochId=epochId,
+                issueType='ForceConsensusTxnFailed',
+                projectId=project,
+                extra=str(ex),
+            )
+
+            await send_failure_notifications(
+                client=self._client,
+                message=issue,
+            )
+
+            await self._reset_nonce()
 
     async def _force_complete_consensus(self):
         epochs_to_process = []
         epochs_to_remove = set()
         for release_time, epoch in self._pending_epochs:
-            # anchor chain block time is 2 but using 2.5 for additional buffer
-            if release_time + (self._submission_window * 2.5) < time.time():
+            # anchor chain block time + 30 seconds buffer
+            if release_time + (self._submission_window * settings.anchor_chain.block_time) + 30 < time.time():
                 epochs_to_process.append(epoch)
                 epochs_to_remove.add((release_time, epoch))
 
@@ -256,7 +262,7 @@ class ForceConsensus:
             for epochId in epochs_to_process:
                 projects_to_process = self._projects_submitted_for_epoch[epochId] - self._finalized_epochs[epochId]
                 self._logger.info(
-                    'Force completing consensus for projects: {}', projects_to_process,
+                    'Force completing consensus for {} projects', len(projects_to_process),
                 )
 
                 for project in projects_to_process:
@@ -264,8 +270,10 @@ class ForceConsensus:
 
             results = await asyncio.gather(*txn_tasks, return_exceptions=True)
 
-            del self._finalized_epochs[epochId]
-            del self._projects_submitted_for_epoch[epochId]
+            if self._finalized_epochs[epochId]:
+                del self._finalized_epochs[epochId]
+            if self._projects_submitted_for_epoch[epochId]:
+                del self._projects_submitted_for_epoch[epochId]
 
             for result in results:
                 if isinstance(result, Exception):
@@ -276,9 +284,6 @@ class ForceConsensus:
     async def run(self):
 
         await self.setup()
-
-        if self._submission_window == 0:
-            self._submission_window = await protocol_state_contract.functions.snapshotSubmissionWindow().call()
 
         while True:
             try:
@@ -308,53 +313,39 @@ class ForceConsensus:
                     self._last_processed_block = json.loads(
                         last_processed_block_data,
                     )
+                else:
+                    self._last_processed_block = current_block - 1
 
-            if self._last_processed_block:
-                if current_block - self._last_processed_block >= 10:
-                    self._logger.warning(
-                        'Last processed block is too far behind current block, '
-                        'processing current block',
-                    )
-                    self._last_processed_block = current_block - 10
-
-                # Get events from current block to last_processed_block
-                try:
-                    await self.get_events(self._last_processed_block, current_block)
-                except Exception as e:
-                    self._logger.opt(exception=True).error(
-                        (
-                            'Unable to fetch events from block {} to block {}, '
-                            'ERROR: {}, sleeping for {} seconds.'
-                        ),
-                        self._last_processed_block + 1,
-                        current_block,
-                        e,
-                        settings.anchor_chain.polling_interval,
-                    )
-                    await asyncio.sleep(settings.anchor_chain.polling_interval)
-                    continue
-
-            else:
-
-                self._logger.debug(
-                    'No last processed epoch found, processing current block',
+            if current_block - self._last_processed_block >= settings.anchor_chain.max_block_buffer:
+                self._logger.warning(
+                    'Last processed block is too far behind current block, '
+                    'processing current block',
                 )
+                self._last_processed_block = current_block - settings.anchor_chain.max_block_buffer
 
-                try:
-                    await self.get_events(current_block, current_block)
-                except Exception as e:
-                    self._logger.opt(exception=True).error(
-                        (
-                            'Unable to fetch events from block {} to block {}, '
-                            'ERROR: {}, sleeping for {} seconds.'
-                        ),
-                        current_block,
-                        current_block,
-                        e,
-                        settings.anchor_chain.polling_interval,
-                    )
-                    await asyncio.sleep(settings.anchor_chain.polling_interval)
-                    continue
+            if self._last_processed_block == current_block:
+                self._logger.info(
+                    'No new blocks detected, sleeping for {} seconds...',
+                    settings.anchor_chain.polling_interval,
+                )
+                await asyncio.sleep(settings.anchor_chain.polling_interval)
+                continue
+            # Get events from current block to last_processed_block
+            try:
+                await self.get_events(self._last_processed_block + 1, current_block)
+            except Exception as e:
+                self._logger.opt(exception=True).error(
+                    (
+                        'Unable to fetch events from block {} to block {}, '
+                        'ERROR: {}, sleeping for {} seconds.'
+                    ),
+                    self._last_processed_block + 1,
+                    current_block,
+                    e,
+                    settings.anchor_chain.polling_interval,
+                )
+                await asyncio.sleep(settings.anchor_chain.polling_interval)
+                continue
 
             self._last_processed_block = current_block
 
@@ -372,6 +363,12 @@ class ForceConsensus:
 
 def main():
     """Spin up the ticker process in event loop"""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(
+        resource.RLIMIT_NOFILE,
+        (settings.rlimit.file_descriptors, hard),
+    )
+
     loop = uvloop.new_event_loop()
     asyncio.set_event_loop(loop)
     force_consensus_process = ForceConsensus()

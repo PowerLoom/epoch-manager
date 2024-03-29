@@ -76,6 +76,9 @@ class ChainConfig(BaseModel):
 
 class AnchorChainConfig(BaseModel):
     rpc: RPCConfigBase
+    default_gas_in_gwei: float
+    block_time: int
+    max_block_buffer: int
     chain_id: int
     polling_interval: int
 
