@@ -53,32 +53,3 @@ def semaphore_then_aiorwlock_aqcuire_release(fn):
             return tx_hash
 
     return wrapper
-
-
-def aiorwlock_aqcuire_release(fn):
-    """
-    A decorator that wraps a function and handles cleanup of any child processes
-    spawned by the function in case of an exception.
-
-    Args:
-        fn (function): The function to be wrapped.
-
-    Returns:
-        function: The wrapped function.
-    """
-    @wraps(fn)
-    async def wrapper(self, *args, **kwargs):
-        await self._rwlock.writer_lock.acquire()
-        try:
-            await fn(self, *args, **kwargs)
-            # release rwlock
-            try:
-                self._rwlock.writer_lock.release()
-            except Exception as e:
-                self._logger.error(f'Error releasing rwlock: {e}. But moving on regardless...')
-        except Exception as e:
-            # this is ultimately reraised by tenacity once the retries are exhausted
-            # nothing to do here
-            raise e
-
-    return wrapper
