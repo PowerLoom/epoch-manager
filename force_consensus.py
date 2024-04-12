@@ -28,7 +28,6 @@ from rpc import RpcHelper
 from settings.conf import settings
 from utils.default_logger import logger
 from utils.helpers import semaphore_then_aiorwlock_aqcuire_release
-from utils.helpers import aiorwlock_aqcuire_release
 from utils.notification_utils import send_failure_notifications
 from utils.redis_conn import RedisPool
 from utils.transaction_utils import write_transaction
@@ -178,10 +177,10 @@ class ForceConsensus:
         self._nonce += 1
         return tx_hash
 
-    @aiorwlock_aqcuire_release
+    @semaphore_then_aiorwlock_aqcuire_release
     async def _reset_nonce(self):
         self._logger.info('Resetting nonce')
-        # sleep for 15 seconds to avoid nonce collision
+        # sleep for 30 seconds to avoid nonce collision
         time.sleep(30)
 
         self._nonce = await w3.eth.get_transaction_count(
