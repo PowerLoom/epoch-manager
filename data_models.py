@@ -105,6 +105,8 @@ class SettingsConf(BaseModel):
     validator_epoch_private_key: str
     force_consensus_address: str
     force_consensus_private_key: str
+    force_consensus_batch_address: str
+    force_consensus_batch_private_key: str
 
 
 class Epoch(BaseModel):

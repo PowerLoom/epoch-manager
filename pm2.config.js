@@ -27,6 +27,16 @@ module.exports = {
       env: {
         NODE_ENV: NODE_ENV,
       }
+    },
+    {
+      name   : "force-consensus-batch",
+      script : `poetry run python -m force_consensus_batch`,
+      max_restarts: MAX_RESTART,
+      min_uptime: MIN_UPTIME,
+      env: {
+        NODE_ENV: NODE_ENV,
+      }
     }
+
   ]
 }
