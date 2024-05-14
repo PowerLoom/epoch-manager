@@ -62,7 +62,7 @@
 	"validator_epoch_private_key": "0x000000",
 	"force_consensus_address": "0x000000",
 	"force_consensus_private_key": "0x000000",
-	"force_consensus_batch": "0x000000",
+	"force_consensus_batch_address": "0x000000",
 	"force_consensus_batch_private_key": "0x000000",
 
 	"ticker_begin_block": 0
