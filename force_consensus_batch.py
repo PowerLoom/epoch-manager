@@ -223,11 +223,11 @@ class ForceConsensus:
                     raise Exception('Transaction failed!')
 
             self._logger.info(
-                'Force completing consensus for project: {}, epoch: {}, txhash: {}', project, epochId, tx_hash,
+                'Force completing consensus for batch: {}, epoch: {}, txhash: {}', project, epochId, tx_hash,
             )
         except Exception as ex:
             self._logger.error(
-                'Unable to force complete consensus for project: {}, error: {}', project, ex,
+                'Unable to force complete consensus for batch: {}, error: {}', project, ex,
             )
 
             issue = GenericTxnIssue(
@@ -263,7 +263,7 @@ class ForceConsensus:
             for epochId in epochs_to_process:
                 projects_to_process = self._batches_submitted_for_epoch[epochId] - self._finalized_epochs[epochId]
                 self._logger.info(
-                    'Force completing consensus for {} projects', len(projects_to_process),
+                    'Force completing consensus for {} batches', len(projects_to_process),
                 )
 
                 for project in projects_to_process:
