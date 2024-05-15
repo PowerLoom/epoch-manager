@@ -168,7 +168,7 @@ class ForceConsensus:
         tx_hash = await write_transaction(
             w3,
             settings.force_consensus_batch_address,
-            settings.force_consensus_private_key,
+            settings.force_consensus_batch_private_key,
             protocol_state_contract,
             'forceCompleteConsensusAttestations',
             self._nonce,
