@@ -135,7 +135,7 @@ class ForceConsensus:
             self._rwlock = aiorwlock.RWLock()
 
         self._nonce = await w3.eth.get_transaction_count(
-            settings.force_consensus_address,
+            settings.force_consensus_batch_address,
         )
         await self._init_httpx_client()
 
@@ -167,7 +167,7 @@ class ForceConsensus:
     async def _make_transaction(self, project, epochId):
         tx_hash = await write_transaction(
             w3,
-            settings.force_consensus_address,
+            settings.force_consensus_batch_address,
             settings.force_consensus_private_key,
             protocol_state_contract,
             'forceCompleteConsensusAttestations',
@@ -186,7 +186,7 @@ class ForceConsensus:
         time.sleep(30)
 
         self._nonce = await w3.eth.get_transaction_count(
-                settings.force_consensus_address,
+                settings.force_consensus_batch_address,
         )
 
     async def _call_force_complete_consensus(self, project, epochId):
@@ -207,7 +207,7 @@ class ForceConsensus:
                     )
 
                     issue = GenericTxnIssue(
-                        accountAddress=settings.force_consensus_address,
+                        accountAddress=settings.force_consensus_batch_address,
                         epochId=epochId,
                         issueType='ForceConsensusTxnFailed',
                         projectId=project,
@@ -231,7 +231,7 @@ class ForceConsensus:
             )
 
             issue = GenericTxnIssue(
-                accountAddress=settings.force_consensus_address,
+                accountAddress=settings.force_consensus_batch_address,
                 epochId=epochId,
                 issueType='ForceConsensusTxnFailed',
                 projectId=project,
