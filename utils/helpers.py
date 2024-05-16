@@ -28,28 +28,22 @@ def semaphore_then_aiorwlock_aqcuire_release(fn):
         await self._semaphore.acquire()
         try:
             await self._rwlock.writer_lock.acquire()
+            try:
+                tx_hash = await fn(self, *args, **kwargs)
+                return tx_hash
+            finally:
+                # Always release the rwlock, regardless of what happens in fn
+                try:
+                    self._rwlock.writer_lock.release()
+                except Exception as e:
+                    self._logger.error(f'Error releasing rwlock: {e}. But moving on regardless...')
         except Exception as e:
-            self._logger.error(f'Error acquiring rwlock: {e}. Releasing semaphore and exiting...')
-            self._semaphore.release()
+            self._logger.error(f'Error while processing: {e}. Releasing all locks...')
             raise e
-        try:
-            tx_hash = await fn(self, *args, **kwargs)
-            # release semaphore
+        finally:
+            # Always release the semaphore, regardless of what happens in the rest of the wrapper
             try:
                 self._semaphore.release()
             except Exception as e:
                 self._logger.error(f'Error releasing semaphore: {e}. But moving on regardless...')
-            # release rwlock
-            try:
-                self._rwlock.writer_lock.release()
-            except Exception as e:
-                self._logger.error(f'Error releasing rwlock: {e}. But moving on regardless...')
-        except Exception as e:
-            # this is ultimately reraised by tenacity once the retries are exhausted
-            # nothing to do here
-            raise e
-
-        else:
-            return tx_hash
-
     return wrapper
