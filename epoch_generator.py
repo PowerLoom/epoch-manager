@@ -91,7 +91,7 @@ class EpochGenerator:
         stop=stop_after_attempt(settings.anchor_chain.rpc.retry),
     )
     async def _fetch_epoch_from_contract(self) -> int:
-        last_epoch_data = await protocol_state_contract.functions.currentEpoch().call()
+        last_epoch_data = await protocol_state_contract.functions.currentEpoch(Web3.to_checksum_address(settings.data_market_address)).call()
         if last_epoch_data[1]:
             self._logger.debug(
                 'Found last epoch block : {} in contract.', last_epoch_data[
@@ -202,6 +202,7 @@ class EpochGenerator:
                                     'releaseEpoch',
                                     self._nonce,
                                     self.gas if not self._force_tx else self.high_gas,
+                                    Web3.to_checksum_address(settings.data_market_address),
                                     epoch_block['begin'],
                                     epoch_block['end'],
                                 )
@@ -245,6 +246,7 @@ class EpochGenerator:
                                     'releaseEpoch',
                                     self._nonce,
                                     self.gas,
+                                    Web3.to_checksum_address(settings.data_market_address),
                                     epoch_block['begin'],
                                     epoch_block['end'],
                                 )

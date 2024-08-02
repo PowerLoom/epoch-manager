@@ -101,6 +101,7 @@ class SettingsConf(BaseModel):
     rlimit: RLimit
     ticker_begin_block: Optional[int]
     protocol_state_address: str
+    data_market_address: str
     validator_epoch_address: str
     validator_epoch_private_key: str
     force_consensus_address: str

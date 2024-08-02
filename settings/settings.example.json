@@ -58,6 +58,7 @@
 		"file_descriptors": 2048
 	},
 	"protocol_state_address": "0x000000",
+	"data_market_address": "0x000000",
 	"validator_epoch_address": "0x000000",
 	"validator_epoch_private_key": "0x000000",
 	"force_consensus_address": "0x000000",
