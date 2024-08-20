@@ -106,6 +106,85 @@ class EpochGenerator:
             )
             return -1
 
+    async def _wait_and_release_first_epoch(self, rpc_obj, rpc_nodes_obj):
+        start_time = settings.epoch_release_start_timestamp
+
+        self._logger.debug(
+            'Epoch release start time: {}', 
+            start_time,
+        )
+        self._logger.debug(
+            'Current time: {}', 
+            int(time.time()),
+        )
+
+        if start_time < int(time.time()):
+            self._logger.debug(
+                'Target start time window has already passed. Exiting...',
+            )
+            return 0
+
+        while True:
+            current_time = int(time.time())
+            if current_time >= start_time:
+                self._logger.debug(
+                    'Current time satisfies start time: {} | Current time: {}. Proceeding...',
+                    start_time,
+                    current_time,
+                )
+
+                cur_block = rpc_obj.rpc_eth_blocknumber(
+                    rpc_nodes=rpc_nodes_obj,
+                )
+
+                end_block_epoch = cur_block - settings.chain.epoch.head_offset
+                begin_block_epoch = end_block_epoch - settings.chain.epoch.height + 1
+                epoch_block = {'begin': begin_block_epoch, 'end': end_block_epoch}
+
+                self._logger.debug(
+                    'Got current head of chain: {}. Applying offset of: {} for first epoch release | '
+                    'Attempting to release epoch: {}',
+                    cur_block, settings.chain.epoch.head_offset, epoch_block,
+                )
+
+                self.release_counter += 1
+                tx_hash, receipt = await write_transaction_with_receipt(
+                    w3,
+                    settings.validator_epoch_address,
+                    settings.validator_epoch_private_key,
+                    protocol_state_contract,
+                    'releaseEpoch',
+                    self._nonce,
+                    self.gas,
+                    epoch_block['begin'],
+                    epoch_block['end'],
+                )
+
+                if receipt['status'] != 1:
+                    self._logger.error(
+                        'Unable to release epoch, txn failed! Got receipt: {}', 
+                        receipt,
+                    )
+                    return 0
+
+                self._nonce += 1
+                self._logger.debug(
+                    'Epoch Released! Transaction hash: {}', tx_hash,
+                )
+
+                begin_block_epoch = end_block_epoch + 1
+                return begin_block_epoch 
+                
+            else:
+                time_diff = start_time - current_time
+                self._logger.debug(
+                    'Waiting {} seconds for epoch release start time: {} | Current time: {}',
+                    time_diff,
+                    start_time,
+                    current_time,
+                )
+                await asyncio.sleep(time_diff)
+
     async def run(self):
         await self.setup()
 
@@ -130,6 +209,18 @@ class EpochGenerator:
             RETRY_LIMIT=settings.chain.rpc.retry,
         )
         self._logger.debug('Starting {}', Process.name)
+
+        if settings.epoch_release_start_timestamp and not begin_block_epoch:
+            begin_block_epoch = await self._wait_and_release_first_epoch(
+                rpc_obj=rpc_obj,
+                rpc_nodes_obj=rpc_nodes_obj,
+            )
+            if not begin_block_epoch:
+                self._logger.error(
+                    'Unable to release first epoch on time. Exiting...',
+                )
+                return
+        
         while True:
             try:
                 cur_block = rpc_obj.rpc_eth_blocknumber(
