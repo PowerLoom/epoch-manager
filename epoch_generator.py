@@ -1,32 +1,33 @@
 import asyncio
 import json
+import resource
 import time
 from multiprocessing import Process
 from signal import SIGINT
 from signal import signal
 from signal import SIGQUIT
 from signal import SIGTERM
-from tenacity import retry
-from tenacity import retry_if_exception_type
-from tenacity import stop_after_attempt
-from tenacity import wait_random_exponential
-import resource
 
 import uvloop
 from httpx import AsyncClient
 from httpx import AsyncHTTPTransport
 from httpx import Limits
 from httpx import Timeout
-from web3 import AsyncHTTPProvider, Web3
+from tenacity import retry
+from tenacity import retry_if_exception_type
+from tenacity import stop_after_attempt
+from tenacity import wait_random_exponential
+from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
+from web3 import Web3
 
 from data_models import GenericTxnIssue
 from exceptions import GenericExitOnSignal
 from helpers.message_models import RPCNodesObject
 from helpers.rpc_helper import ConstructRPC
 from settings.conf import settings
-from utils.helpers import chunks
 from utils.default_logger import logger
+from utils.helpers import chunks
 from utils.notification_utils import send_failure_notifications
 from utils.transaction_utils import write_transaction
 from utils.transaction_utils import write_transaction_with_receipt
@@ -110,11 +111,11 @@ class EpochGenerator:
         start_time = settings.epoch_release_start_timestamp
 
         self._logger.debug(
-            'Epoch release start time: {}', 
+            'Epoch release start time: {}',
             start_time,
         )
         self._logger.debug(
-            'Current time: {}', 
+            'Current time: {}',
             int(time.time()),
         )
 
@@ -139,7 +140,10 @@ class EpochGenerator:
 
                 end_block_epoch = cur_block - settings.chain.epoch.head_offset
                 begin_block_epoch = end_block_epoch - settings.chain.epoch.height + 1
-                epoch_block = {'begin': begin_block_epoch, 'end': end_block_epoch}
+                epoch_block = {
+                    'begin': begin_block_epoch,
+                    'end': end_block_epoch,
+                }
 
                 self._logger.debug(
                     'Got current head of chain: {}. Applying offset of: {} for first epoch release | '
@@ -162,7 +166,7 @@ class EpochGenerator:
 
                 if receipt['status'] != 1:
                     self._logger.error(
-                        'Unable to release epoch, txn failed! Got receipt: {}', 
+                        'Unable to release epoch, txn failed! Got receipt: {}',
                         receipt,
                     )
                     return 0
@@ -173,8 +177,8 @@ class EpochGenerator:
                 )
 
                 begin_block_epoch = end_block_epoch + 1
-                return begin_block_epoch 
-                
+                return begin_block_epoch
+
             else:
                 time_diff = start_time - current_time
                 self._logger.debug(
@@ -220,7 +224,7 @@ class EpochGenerator:
                     'Unable to release first epoch on time. Exiting...',
                 )
                 return
-        
+
         while True:
             try:
                 cur_block = rpc_obj.rpc_eth_blocknumber(
@@ -282,7 +286,9 @@ class EpochGenerator:
                         )
 
                         try:
-                            self._logger.info('Attempting to release epoch {}', epoch_block)
+                            self._logger.info(
+                                'Attempting to release epoch {}', epoch_block,
+                            )
                             if self.release_counter % self._check_receipt_every == 0 or self._force_tx:
                                 self.release_counter += 1
                                 tx_hash, receipt = await write_transaction_with_receipt(
