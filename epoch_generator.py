@@ -189,6 +189,13 @@ class EpochGenerator:
                 )
                 # there is no point with further retry since this has already been most likely included
                 return
+            else:
+                # re-raise the exception for further retry
+                self._logger.error(
+                    'Unexpected error during epoch release. Submission deets: {}',
+                    submission_info,
+                )
+                raise e
 
         if receipt['status'] != 1:
             self._logger.error(
