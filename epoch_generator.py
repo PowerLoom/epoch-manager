@@ -19,6 +19,7 @@ from tenacity import stop_after_attempt
 from tenacity import wait_random_exponential
 from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
+from web3 import exceptions
 from web3 import Web3
 
 from data_models import GenericTxnIssue
@@ -107,6 +108,98 @@ class EpochGenerator:
             )
             return -1
 
+    async def _reset_nonce(self):
+        correct_nonce = await w3.eth.get_transaction_count(
+            settings.validator_epoch_address,
+        )
+        if correct_nonce and type(correct_nonce) is int:
+            self._nonce = correct_nonce
+            self._logger.info(
+                'Using validator {} for epoch release. Reset nonce to {}',
+                settings.validator_epoch_address, self._nonce,
+            )
+        else:
+            self._logger.error(
+                'Using validator {} for epoch release. Could not reset nonce',
+                settings.validator_epoch_address,
+            )
+
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(Exception),
+        wait=wait_random_exponential(multiplier=1, max=2),
+        stop=stop_after_attempt(settings.anchor_chain.rpc.retry),
+    )
+    async def _release_epoch_with_retry(self, epoch_block):
+        self._logger.info(
+            'Attempting to release epoch {}',
+            epoch_block,
+        )
+        try:
+            self.release_counter += 1
+            tx_hash, receipt = await write_transaction_with_receipt(
+                w3,
+                settings.validator_epoch_address,
+                settings.validator_epoch_private_key,
+                protocol_state_contract,
+                'releaseEpoch',
+                self._nonce,
+                self.gas if not self._force_tx else self.high_gas,
+                epoch_block['begin'],
+                epoch_block['end'],
+            )
+
+            self._nonce += 1
+            self._force_tx = False
+            self._logger.debug(
+                'Epoch Released! Transaction hash: {}', tx_hash,
+            )
+
+        except Exception as e:
+            submission_info = str({
+                'address':  settings.validator_epoch_address,
+                'contract': protocol_state_contract.address,
+                'function': 'releaseEpoch',
+                'nonce': self._nonce,
+                'gas': self.gas if not self._force_tx else self.high_gas,
+                'epoch_begin': epoch_block['begin'],
+                'epoch_end': epoch_block['end'],
+            })
+            if 'nonce too low' in str(e) or 'nonce too high' in str(e):
+                self._logger.error(
+                    'Transaction nonce collision. Submission deets: {}. Time to reset nonce',
+                    submission_info,
+                )
+                await self._reset_nonce()
+                self._force_tx = True
+                raise e
+            elif isinstance(e, exceptions.TimeExhausted):
+                self._logger.error(
+                    'Transaction not in the chain after a successful response.'
+                    'Submission deets: {}, Time to reset nonce',
+                    submission_info,
+                )
+                await self._reset_nonce()
+                self._force_tx = True
+                raise Exception('tx receipt not found in time')
+            elif 'replacement transaction underpriced' in str(e):
+                self._logger.error(
+                    'WILL NOT RETRY: Transaction underpriced. Submission deets: {}',
+                    submission_info,
+                )
+                # there is no point with further retry since this has already been most likely included
+                return
+
+        if receipt['status'] != 1:
+            self._logger.error(
+                'Epoch release for tx: {} failed! Got receipt: {}',
+                tx_hash,
+                receipt,
+            )
+            raise Exception(
+                'Epoch release transaction failed.',
+            )
+
     async def _wait_and_release_first_epoch(self, rpc_obj, rpc_nodes_obj):
         start_time = settings.epoch_release_start_timestamp
 
@@ -138,6 +231,11 @@ class EpochGenerator:
                     rpc_nodes=rpc_nodes_obj,
                 )
 
+                self._logger.debug(
+                    'Got current head of chain: {}. Applying offset of: {} for first epoch release',
+                    cur_block, settings.chain.epoch.head_offset,
+                )
+
                 end_block_epoch = cur_block - settings.chain.epoch.head_offset
                 begin_block_epoch = end_block_epoch - settings.chain.epoch.height + 1
                 epoch_block = {
@@ -145,36 +243,17 @@ class EpochGenerator:
                     'end': end_block_epoch,
                 }
 
-                self._logger.debug(
-                    'Got current head of chain: {}. Applying offset of: {} for first epoch release | '
-                    'Attempting to release epoch: {}',
-                    cur_block, settings.chain.epoch.head_offset, epoch_block,
-                )
-
-                self.release_counter += 1
-                tx_hash, receipt = await write_transaction_with_receipt(
-                    w3,
-                    settings.validator_epoch_address,
-                    settings.validator_epoch_private_key,
-                    protocol_state_contract,
-                    'releaseEpoch',
-                    self._nonce,
-                    self.gas,
-                    epoch_block['begin'],
-                    epoch_block['end'],
-                )
-
-                if receipt['status'] != 1:
-                    self._logger.error(
-                        'Unable to release epoch, txn failed! Got receipt: {}',
-                        receipt,
+                try:
+                    await self._release_epoch_with_retry(epoch_block)
+                except Exception as e:
+                    issue = GenericTxnIssue(
+                        accountAddress=settings.validator_epoch_address,
+                        epochBegin=epoch_block['begin'],
+                        issueType='FirstEpochReleaseTxnFailed',
+                        extra=json.dumps({'issueDetails': f'Error : {e}'}),
                     )
+                    await send_failure_notifications(client=self._client, message=issue)
                     return 0
-
-                self._nonce += 1
-                self._logger.debug(
-                    'Epoch Released! Transaction hash: {}', tx_hash,
-                )
 
                 begin_block_epoch = end_block_epoch + 1
                 return begin_block_epoch
