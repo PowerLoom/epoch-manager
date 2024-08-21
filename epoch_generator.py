@@ -192,7 +192,8 @@ class EpochGenerator:
             else:
                 # re-raise the exception for further retry
                 self._logger.error(
-                    'Unexpected error during epoch release. Submission deets: {}',
+                    'Unexpected error during epoch release. Error: {}, Submission deets: {}',
+                    e,
                     submission_info,
                 )
                 raise e
