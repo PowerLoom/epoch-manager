@@ -145,6 +145,7 @@ class EpochGenerator:
                 'releaseEpoch',
                 self._nonce,
                 self.gas if not self._force_tx else self.high_gas,
+                settings.data_market_address,
                 epoch_block['begin'],
                 epoch_block['end'],
             )
