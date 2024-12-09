@@ -58,8 +58,11 @@
 		"file_descriptors": 2048
 	},
 	"protocol_state_address": "0x000000",
+	"data_market_address": "0x000000",
 	"validator_epoch_address": "0x000000",
 	"validator_epoch_private_key": "0x000000",
-	"ticker_begin_block": 0,
-	"epoch_release_start_timestamp": 0
+	"force_consensus_batch_address": "0x000000",
+	"force_consensus_batch_private_key": "0x000000",
+	"epoch_release_start_timestamp": 0,
+	"ticker_begin_block": 0
 }
