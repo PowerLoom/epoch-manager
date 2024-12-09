@@ -105,6 +105,7 @@ class SettingsConf(BaseModel):
     validator_epoch_private_key: str
     force_consensus_address: str
     force_consensus_private_key: str
+    epoch_release_start_timestamp: int
 
 
 class Epoch(BaseModel):

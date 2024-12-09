@@ -1,32 +1,34 @@
 import asyncio
 import json
+import resource
 import time
 from multiprocessing import Process
 from signal import SIGINT
 from signal import signal
 from signal import SIGQUIT
 from signal import SIGTERM
-from tenacity import retry
-from tenacity import retry_if_exception_type
-from tenacity import stop_after_attempt
-from tenacity import wait_random_exponential
-import resource
 
 import uvloop
 from httpx import AsyncClient
 from httpx import AsyncHTTPTransport
 from httpx import Limits
 from httpx import Timeout
-from web3 import AsyncHTTPProvider, Web3
+from tenacity import retry
+from tenacity import retry_if_exception_type
+from tenacity import stop_after_attempt
+from tenacity import wait_random_exponential
+from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
+from web3 import exceptions
+from web3 import Web3
 
 from data_models import GenericTxnIssue
 from exceptions import GenericExitOnSignal
 from helpers.message_models import RPCNodesObject
 from helpers.rpc_helper import ConstructRPC
 from settings.conf import settings
-from utils.helpers import chunks
 from utils.default_logger import logger
+from utils.helpers import chunks
 from utils.notification_utils import send_failure_notifications
 from utils.transaction_utils import write_transaction
 from utils.transaction_utils import write_transaction_with_receipt
@@ -106,6 +108,174 @@ class EpochGenerator:
             )
             return -1
 
+    async def _reset_nonce(self):
+        correct_nonce = await w3.eth.get_transaction_count(
+            settings.validator_epoch_address,
+        )
+        if correct_nonce and type(correct_nonce) is int:
+            self._nonce = correct_nonce
+            self._logger.info(
+                'Using validator {} for epoch release. Reset nonce to {}',
+                settings.validator_epoch_address, self._nonce,
+            )
+        else:
+            self._logger.error(
+                'Using validator {} for epoch release. Could not reset nonce',
+                settings.validator_epoch_address,
+            )
+
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type(Exception),
+        wait=wait_random_exponential(multiplier=1, max=2),
+        stop=stop_after_attempt(settings.anchor_chain.rpc.retry),
+    )
+    async def _release_epoch_with_retry(self, epoch_block):
+        self._logger.info(
+            'Attempting to release epoch {}',
+            epoch_block,
+        )
+        try:
+            self.release_counter += 1
+            tx_hash, receipt = await write_transaction_with_receipt(
+                w3,
+                settings.validator_epoch_address,
+                settings.validator_epoch_private_key,
+                protocol_state_contract,
+                'releaseEpoch',
+                self._nonce,
+                self.gas if not self._force_tx else self.high_gas,
+                epoch_block['begin'],
+                epoch_block['end'],
+            )
+
+            self._nonce += 1
+            self._force_tx = False
+            self._logger.debug(
+                'Epoch Released! Transaction hash: {}', tx_hash,
+            )
+
+        except Exception as e:
+            submission_info = str({
+                'address':  settings.validator_epoch_address,
+                'contract': protocol_state_contract.address,
+                'function': 'releaseEpoch',
+                'nonce': self._nonce,
+                'gas': self.gas if not self._force_tx else self.high_gas,
+                'epoch_begin': epoch_block['begin'],
+                'epoch_end': epoch_block['end'],
+            })
+            if 'nonce too low' in str(e) or 'nonce too high' in str(e):
+                self._logger.error(
+                    'Transaction nonce collision. Submission deets: {}. Time to reset nonce',
+                    submission_info,
+                )
+                await self._reset_nonce()
+                self._force_tx = True
+                raise e
+            elif isinstance(e, exceptions.TimeExhausted):
+                self._logger.error(
+                    'Transaction not in the chain after a successful response.'
+                    'Submission deets: {}, Time to reset nonce',
+                    submission_info,
+                )
+                await self._reset_nonce()
+                self._force_tx = True
+                raise Exception('tx receipt not found in time')
+            elif 'replacement transaction underpriced' in str(e):
+                self._logger.error(
+                    'WILL NOT RETRY: Transaction underpriced. Submission deets: {}',
+                    submission_info,
+                )
+                # there is no point with further retry since this has already been most likely included
+                return
+            else:
+                # re-raise the exception for further retry
+                self._logger.error(
+                    'Unexpected error during epoch release. Error: {}, Submission deets: {}',
+                    e,
+                    submission_info,
+                )
+                raise e
+
+        if receipt['status'] != 1:
+            self._logger.error(
+                'Epoch release for tx: {} failed! Got receipt: {}',
+                tx_hash,
+                receipt,
+            )
+            raise Exception(
+                'Epoch release transaction failed.',
+            )
+
+    async def _wait_and_release_first_epoch(self, rpc_obj, rpc_nodes_obj):
+        start_time = settings.epoch_release_start_timestamp
+
+        self._logger.debug(
+            'Epoch release start time: {}',
+            start_time,
+        )
+        self._logger.debug(
+            'Current time: {}',
+            int(time.time()),
+        )
+
+        if start_time < int(time.time()):
+            self._logger.debug(
+                'Target start time window has already passed. Exiting...',
+            )
+            return 0
+
+        while True:
+            current_time = int(time.time())
+            if current_time >= start_time:
+                self._logger.debug(
+                    'Current time satisfies start time: {} | Current time: {}. Proceeding...',
+                    start_time,
+                    current_time,
+                )
+
+                cur_block = rpc_obj.rpc_eth_blocknumber(
+                    rpc_nodes=rpc_nodes_obj,
+                )
+
+                self._logger.debug(
+                    'Got current head of chain: {}. Applying offset of: {} for first epoch release',
+                    cur_block, settings.chain.epoch.head_offset,
+                )
+
+                end_block_epoch = cur_block - settings.chain.epoch.head_offset
+                begin_block_epoch = end_block_epoch - settings.chain.epoch.height + 1
+                epoch_block = {
+                    'begin': begin_block_epoch,
+                    'end': end_block_epoch,
+                }
+
+                try:
+                    await self._release_epoch_with_retry(epoch_block)
+                except Exception as e:
+                    issue = GenericTxnIssue(
+                        accountAddress=settings.validator_epoch_address,
+                        epochBegin=epoch_block['begin'],
+                        issueType='FirstEpochReleaseTxnFailed',
+                        extra=json.dumps({'issueDetails': f'Error : {e}'}),
+                    )
+                    await send_failure_notifications(client=self._client, message=issue)
+                    return 0
+
+                begin_block_epoch = end_block_epoch + 1
+                return begin_block_epoch
+
+            else:
+                time_diff = start_time - current_time
+                self._logger.debug(
+                    'Waiting {} seconds for epoch release start time: {} | Current time: {}',
+                    time_diff,
+                    start_time,
+                    current_time,
+                )
+                await asyncio.sleep(time_diff)
+
     async def run(self):
         await self.setup()
 
@@ -130,6 +300,18 @@ class EpochGenerator:
             RETRY_LIMIT=settings.chain.rpc.retry,
         )
         self._logger.debug('Starting {}', Process.name)
+
+        if settings.epoch_release_start_timestamp and not begin_block_epoch:
+            begin_block_epoch = await self._wait_and_release_first_epoch(
+                rpc_obj=rpc_obj,
+                rpc_nodes_obj=rpc_nodes_obj,
+            )
+            if not begin_block_epoch:
+                self._logger.error(
+                    'Unable to release first epoch on time. Exiting...',
+                )
+                return
+
         while True:
             try:
                 cur_block = rpc_obj.rpc_eth_blocknumber(
@@ -191,7 +373,9 @@ class EpochGenerator:
                         )
 
                         try:
-                            self._logger.info('Attempting to release epoch {}', epoch_block)
+                            self._logger.info(
+                                'Attempting to release epoch {}', epoch_block,
+                            )
                             if self.release_counter % self._check_receipt_every == 0 or self._force_tx:
                                 self.release_counter += 1
                                 tx_hash, receipt = await write_transaction_with_receipt(
