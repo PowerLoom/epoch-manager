@@ -60,8 +60,6 @@
 	"protocol_state_address": "0x000000",
 	"validator_epoch_address": "0x000000",
 	"validator_epoch_private_key": "0x000000",
-	"force_consensus_address": "0x000000",
-	"force_consensus_private_key": "0x000000",
 	"ticker_begin_block": 0,
 	"epoch_release_start_timestamp": 0
 }
