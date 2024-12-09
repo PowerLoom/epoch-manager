@@ -81,8 +81,8 @@ class ForceConsensus:
 
         EVENT_SIGS = {
             'EpochReleased': 'EpochReleased(uint256,uint256,uint256,uint256)',
-            'SnapshotBatchFinalized': 'SnapshotBatchFinalized(uint256,uint256,uint256)',
-            'SnapshotBatchSubmitted': 'SnapshotBatchSubmitted(uint256,string,uint256,uint256)',
+            'SnapshotBatchFinalized': 'SnapshotBatchFinalized(address,uint256,uint256,uint256)',
+            'SnapshotBatchSubmitted': 'SnapshotBatchSubmitted(address,uint256,string,uint256,uint256)',
         }
 
         self.event_sig, self.event_abi = get_event_sig_and_abi(
@@ -116,9 +116,9 @@ class ForceConsensus:
                 self._logger.info(
                     'Epoch release detected, adding epoch: {} to pending epochs', log['args']['epochId'],
                 )
-            elif log['event'] == 'SnapshotBatchFinalized':
+            elif log['event'] == 'SnapshotBatchFinalized' and log['args']['dataMarketAddress'].lower() == settings.data_market_address.lower():
                 self._finalized_epochs[log['args']['epochId']].add(log['args']['batchId'])
-            elif log['event'] == 'SnapshotBatchSubmitted':
+            elif log['event'] == 'SnapshotBatchSubmitted' and log['args']['dataMarketAddress'].lower() == settings.data_market_address.lower():
                 self._batches_submitted_for_epoch[log['args']['epochId']].add(log['args']['batchId'])
 
         asyncio.ensure_future(self._force_complete_consensus())
