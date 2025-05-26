@@ -32,7 +32,8 @@
 			"head_offset": 2,
 			"block_time": 12,
 			"history_length": 1000
-		}
+		},
+		"polling_interval": 2
 	},
 	"anchor_chain": {
 		"rpc": {

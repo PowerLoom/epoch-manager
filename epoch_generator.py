@@ -162,7 +162,7 @@ class EpochGenerator:
                         # Special handling for epoch height of 1 - use simple polling
                         if settings.chain.epoch.height == 1:
                             polling_interval = getattr(
-                                settings.anchor_chain, 'polling_interval', settings.chain.epoch.block_time // 2,
+                                settings.chain, 'polling_interval', settings.chain.epoch.block_time // 2,
                             )
                             self._logger.debug(
                                 'Current head of source chain estimated at block {} after offsetting | '
