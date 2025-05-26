@@ -1,32 +1,33 @@
 import asyncio
 import json
+import resource
 import time
 from multiprocessing import Process
 from signal import SIGINT
 from signal import signal
 from signal import SIGQUIT
 from signal import SIGTERM
-from tenacity import retry
-from tenacity import retry_if_exception_type
-from tenacity import stop_after_attempt
-from tenacity import wait_random_exponential
-import resource
 
 import uvloop
 from httpx import AsyncClient
 from httpx import AsyncHTTPTransport
 from httpx import Limits
 from httpx import Timeout
-from web3 import AsyncHTTPProvider, Web3
+from tenacity import retry
+from tenacity import retry_if_exception_type
+from tenacity import stop_after_attempt
+from tenacity import wait_random_exponential
+from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
+from web3 import Web3
 
 from data_models import GenericTxnIssue
 from exceptions import GenericExitOnSignal
 from helpers.message_models import RPCNodesObject
 from helpers.rpc_helper import ConstructRPC
 from settings.conf import settings
-from utils.helpers import chunks
 from utils.default_logger import logger
+from utils.helpers import chunks
 from utils.notification_utils import send_failure_notifications
 from utils.transaction_utils import write_transaction
 from utils.transaction_utils import write_transaction_with_receipt
@@ -158,19 +159,33 @@ class EpochGenerator:
                 else:
                     end_block_epoch = cur_block - settings.chain.epoch.head_offset
                     if not (end_block_epoch - begin_block_epoch + 1) >= settings.chain.epoch.height:
-                        sleep_factor = settings.chain.epoch.height - \
-                            ((end_block_epoch - begin_block_epoch) + 1)
-                        self._logger.debug(
-                            'Current head of source chain estimated at block {} after offsetting | '
-                            '{} - {} does not satisfy configured epoch length. '
-                            'Sleeping for {} seconds for {} blocks to accumulate....',
-                            end_block_epoch, begin_block_epoch, end_block_epoch,
-                            sleep_factor * settings.chain.epoch.block_time, sleep_factor,
-                        )
-                        await asyncio.sleep(
-                            sleep_factor *
-                            settings.chain.epoch.block_time,
-                        )
+                        # Special handling for epoch height of 1 - use simple polling
+                        if settings.chain.epoch.height == 1:
+                            polling_interval = getattr(
+                                settings.anchor_chain, 'polling_interval', settings.chain.epoch.block_time // 2,
+                            )
+                            self._logger.debug(
+                                'Current head of source chain estimated at block {} after offsetting | '
+                                '{} - {} does not satisfy configured epoch length (height=1). '
+                                'Using simple polling method, sleeping for {} seconds...',
+                                end_block_epoch, begin_block_epoch, end_block_epoch, polling_interval,
+                            )
+                            await asyncio.sleep(polling_interval)
+                        else:
+                            # Original logic for epoch height > 1
+                            sleep_factor = settings.chain.epoch.height - \
+                                ((end_block_epoch - begin_block_epoch) + 1)
+                            self._logger.debug(
+                                'Current head of source chain estimated at block {} after offsetting | '
+                                '{} - {} does not satisfy configured epoch length. '
+                                'Sleeping for {} seconds for {} blocks to accumulate....',
+                                end_block_epoch, begin_block_epoch, end_block_epoch,
+                                sleep_factor * settings.chain.epoch.block_time, sleep_factor,
+                            )
+                            await asyncio.sleep(
+                                sleep_factor *
+                                settings.chain.epoch.block_time,
+                            )
                         continue
                     self._logger.debug(
                         'Chunking blocks between {} - {} with chunk size: {}', begin_block_epoch,
@@ -191,7 +206,9 @@ class EpochGenerator:
                         )
 
                         try:
-                            self._logger.info('Attempting to release epoch {}', epoch_block)
+                            self._logger.info(
+                                'Attempting to release epoch {}', epoch_block,
+                            )
                             if self.release_counter % self._check_receipt_every == 0 or self._force_tx:
                                 self.release_counter += 1
                                 tx_hash, receipt = await write_transaction_with_receipt(
@@ -202,7 +219,9 @@ class EpochGenerator:
                                     'releaseEpoch',
                                     self._nonce,
                                     self.gas if not self._force_tx else self.high_gas,
-                                    Web3.to_checksum_address(settings.data_market_address),
+                                    Web3.to_checksum_address(
+                                        settings.data_market_address,
+                                    ),
                                     epoch_block['begin'],
                                     epoch_block['end'],
                                 )
@@ -246,7 +265,9 @@ class EpochGenerator:
                                     'releaseEpoch',
                                     self._nonce,
                                     self.gas,
-                                    Web3.to_checksum_address(settings.data_market_address),
+                                    Web3.to_checksum_address(
+                                        settings.data_market_address,
+                                    ),
                                     epoch_block['begin'],
                                     epoch_block['end'],
                                 )
