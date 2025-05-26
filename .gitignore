@@ -4,3 +4,4 @@ __pycache__/
 settings/settings.json
 .python-version
 auth/settings/auth_settings.json
+logs/
