@@ -72,6 +72,7 @@ class ChainConfig(BaseModel):
     rpc: RPCConfigBase
     chain_id: int
     epoch: EpochConfig
+    polling_interval: int
 
 
 class AnchorChainConfig(BaseModel):
