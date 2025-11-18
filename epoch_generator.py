@@ -32,6 +32,9 @@ from utils.notification_utils import send_failure_notifications
 from utils.transaction_utils import write_transaction
 from utils.transaction_utils import write_transaction_with_receipt
 protocol_state_contract_address = settings.protocol_state_address
+data_market_address = settings.data_market_address
+new_protocol_state_contract_address = settings.new_protocol_state_address
+new_data_market_address = settings.new_data_market_address
 
 # load abi from json file and create contract object
 with open('utils/static/abi.json', 'r') as f:
@@ -39,8 +42,12 @@ with open('utils/static/abi.json', 'r') as f:
 
 w3 = AsyncWeb3(AsyncHTTPProvider(settings.anchor_chain.rpc.full_nodes[0].url))
 protocol_state_contract = w3.eth.contract(
-    address=settings.protocol_state_address, abi=abi,
+    address=protocol_state_contract_address, abi=abi,
 )
+
+new_protocol_state_contract = w3.eth.contract(
+    address=new_protocol_state_contract_address, abi=abi,
+) if new_protocol_state_contract_address else None
 
 
 class EpochGenerator:
@@ -92,7 +99,11 @@ class EpochGenerator:
         stop=stop_after_attempt(settings.anchor_chain.rpc.retry),
     )
     async def _fetch_epoch_from_contract(self) -> int:
-        last_epoch_data = await protocol_state_contract.functions.currentEpoch(Web3.to_checksum_address(settings.data_market_address)).call()
+        last_epoch_data = await protocol_state_contract.functions.currentEpoch(Web3.to_checksum_address(data_market_address)).call()
+        if new_protocol_state_contract and new_data_market_address:
+            new_last_epoch_data = await new_protocol_state_contract.functions.currentEpoch(Web3.to_checksum_address(new_data_market_address)).call()
+            if new_last_epoch_data[1]:
+                return new_last_epoch_data[1] + 1
         if last_epoch_data[1]:
             self._logger.debug(
                 'Found last epoch block : {} in contract.', last_epoch_data[
@@ -220,24 +231,55 @@ class EpochGenerator:
                                     self._nonce,
                                     self.gas if not self._force_tx else self.high_gas,
                                     Web3.to_checksum_address(
-                                        settings.data_market_address,
+                                        data_market_address,
                                     ),
                                     epoch_block['begin'],
                                     epoch_block['end'],
                                 )
 
-                                if receipt['status'] != 1:
-                                    self._logger.error(
-                                        'Unable to release epoch, txn failed! Got receipt: {}', receipt,
+                                # Submit to new contracts if configured
+                                if new_protocol_state_contract and new_data_market_address:
+                                    self._nonce += 1
+                                    new_tx_hash, new_receipt = await write_transaction_with_receipt(
+                                        w3,
+                                        settings.validator_epoch_address,
+                                        settings.validator_epoch_private_key,
+                                        new_protocol_state_contract,
+                                        'releaseEpoch',
+                                        self._nonce,
+                                        self.gas if not self._force_tx else self.high_gas,
+                                        Web3.to_checksum_address(
+                                            new_data_market_address,
+                                        ),
+                                        epoch_block['begin'],
+                                        epoch_block['end'],
                                     )
 
+                                # Check both transaction receipts
+                                if receipt['status'] != 1:
+                                    self._logger.error(
+                                        'Unable to release epoch (old contract), txn failed! Got receipt: {}', receipt,
+                                    )
                                     issue = GenericTxnIssue(
                                         accountAddress=settings.validator_epoch_address,
                                         epochBegin=epoch_block['begin'],
                                         issueType='EpochReleaseTxnFailed',
                                         extra=Web3.to_json(receipt),
                                     )
+                                elif new_protocol_state_contract and new_data_market_address and new_receipt['status'] != 1:
+                                    self._logger.error(
+                                        'Unable to release epoch (new contract), txn failed! Got receipt: {}', new_receipt,
+                                    )
+                                    issue = GenericTxnIssue(
+                                        accountAddress=settings.validator_epoch_address,
+                                        epochBegin=epoch_block['begin'],
+                                        issueType='EpochReleaseTxnFailed',
+                                        extra=Web3.to_json(new_receipt),
+                                    )
+                                else:
+                                    issue = None
 
+                                if issue:
                                     await send_failure_notifications(client=self._client, message=issue)
 
                                     # sleep for 30 seconds to avoid nonce collision
@@ -266,7 +308,7 @@ class EpochGenerator:
                                     self._nonce,
                                     self.gas,
                                     Web3.to_checksum_address(
-                                        settings.data_market_address,
+                                        data_market_address,
                                     ),
                                     epoch_block['begin'],
                                     epoch_block['end'],

@@ -103,6 +103,8 @@ class SettingsConf(BaseModel):
     ticker_begin_block: Optional[int]
     protocol_state_address: str
     data_market_address: str
+    new_protocol_state_address: Optional[str] = None
+    new_data_market_address: Optional[str] = None
     validator_epoch_address: str
     validator_epoch_private_key: str
     force_consensus_address: str
