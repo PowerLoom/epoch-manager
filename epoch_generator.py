@@ -57,6 +57,7 @@ class EpochGenerator:
         self._shutdown_initiated = False
         self._end = None
         self._nonce = -1
+        self._new_nonce = -1
         self._async_transport = None
         self._client = None
         self.release_counter = 0
@@ -69,6 +70,10 @@ class EpochGenerator:
         self._nonce = await w3.eth.get_transaction_count(
             settings.validator_epoch_address,
         )
+        if settings.new_validator_epoch_address:
+            self._new_nonce = await w3.eth.get_transaction_count(
+                settings.new_validator_epoch_address,
+            )
         await self._init_httpx_client()
 
     async def _init_httpx_client(self):
@@ -238,15 +243,14 @@ class EpochGenerator:
                                 )
 
                                 # Submit to new contracts if configured
-                                if new_protocol_state_contract and new_data_market_address:
-                                    self._nonce += 1
+                                if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
                                     new_tx_hash, new_receipt = await write_transaction_with_receipt(
                                         w3,
-                                        settings.validator_epoch_address,
-                                        settings.validator_epoch_private_key,
+                                        settings.new_validator_epoch_address,
+                                        settings.new_validator_epoch_private_key,
                                         new_protocol_state_contract,
                                         'releaseEpoch',
-                                        self._nonce,
+                                        self._new_nonce,
                                         self.gas if not self._force_tx else self.high_gas,
                                         Web3.to_checksum_address(
                                             new_data_market_address,
@@ -288,6 +292,10 @@ class EpochGenerator:
                                     self._nonce = await w3.eth.get_transaction_count(
                                         settings.validator_epoch_address,
                                     )
+                                    if settings.new_validator_epoch_address:
+                                        self._new_nonce = await w3.eth.get_transaction_count(
+                                            settings.new_validator_epoch_address,
+                                        )
 
                                     last_contract_epoch = await self._fetch_epoch_from_contract()
                                     if last_contract_epoch != -1:
@@ -314,7 +322,26 @@ class EpochGenerator:
                                     epoch_block['end'],
                                 )
 
+                                # Submit to new contracts if configured
+                                if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
+                                    new_tx_hash = await write_transaction(
+                                        w3,
+                                        settings.new_validator_epoch_address,
+                                        settings.new_validator_epoch_private_key,
+                                        new_protocol_state_contract,
+                                        'releaseEpoch',
+                                        self._new_nonce,
+                                        self.gas,
+                                        Web3.to_checksum_address(
+                                            new_data_market_address,
+                                        ),
+                                        epoch_block['begin'],
+                                        epoch_block['end'],
+                                    )
+
                             self._nonce += 1
+                            if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
+                                self._new_nonce += 1
 
                             self._logger.debug(
                                 'Epoch Released! Transaction hash: {}', tx_hash,
@@ -339,6 +366,10 @@ class EpochGenerator:
                             self._nonce = await w3.eth.get_transaction_count(
                                 settings.validator_epoch_address,
                             )
+                            if settings.new_validator_epoch_address:
+                                self._new_nonce = await w3.eth.get_transaction_count(
+                                    settings.new_validator_epoch_address,
+                                )
 
                             last_contract_epoch = await self._fetch_epoch_from_contract()
                             if last_contract_epoch != -1:
