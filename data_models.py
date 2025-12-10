@@ -73,6 +73,7 @@ class ChainConfig(BaseModel):
     chain_id: int
     epoch: EpochConfig
     polling_interval: int
+    force_skip_epoch: bool = False  # Use forceSkipEpoch for large gaps (default: false)
 
 
 class AnchorChainConfig(BaseModel):

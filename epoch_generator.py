@@ -223,19 +223,83 @@ class EpochGenerator:
                     block_gap = end_block_epoch - begin_block_epoch + 1
                     
                     # Gap detection with threshold-based catch-up
-                    if block_gap >= self.GAP_THRESHOLD:
-                        # Large gap detected - skip catch-up to prevent overwhelming snapshotter nodes
-                        # Start fresh from near current head to avoid compute overload
-                        # For height=1, we want to start from current_head - head_offset - offset
-                        # This ensures end_block_epoch >= begin_block_epoch
-                        new_begin = cur_block - settings.chain.epoch.head_offset - self.GAP_OFFSET
-                        self._logger.warning(
-                            'Large block gap detected: {} blocks (>= threshold {}). '
-                            'Skipping catch-up to prevent snapshotter overload. '
-                            'Starting fresh from block {} (current head: {}, offset: {})',
-                            block_gap, self.GAP_THRESHOLD, new_begin, cur_block, self.GAP_OFFSET
-                        )
-                        begin_block_epoch = new_begin
+                    # Track whether to use forceSkipEpoch (for large gaps) - controlled by settings flag
+                    use_force_skip = False
+                    force_skip_enabled = getattr(settings.chain, 'force_skip_epoch', False)
+                    
+                    if block_gap >= self.GAP_THRESHOLD and force_skip_enabled:
+                        # Large gap detected - use forceSkipEpoch to skip to current head
+                        # forceSkipEpoch allows non-sequential epoch release (requires owner permission)
+                        # This prevents overwhelming snapshotter nodes with massive catch-up
+                        try:
+                            last_contract_epoch = await self._fetch_epoch_from_contract()
+                            if last_contract_epoch != -1:
+                                contract_epoch_end = last_contract_epoch
+                                # Calculate target epoch that's a multiple of EPOCH_SIZE from currentEpoch.end
+                                # For EPOCH_SIZE == 1, we can jump to any block
+                                if settings.chain.epoch.height == 1:
+                                    # Jump directly to current head - offset
+                                    begin_block_epoch = cur_block - settings.chain.epoch.head_offset - self.GAP_OFFSET
+                                    end_block_epoch = cur_block - settings.chain.epoch.head_offset
+                                else:
+                                    # Calculate valid epoch that's a multiple of epoch_height from contract_epoch_end
+                                    blocks_to_skip = end_block_epoch - contract_epoch_end
+                                    epochs_to_skip = blocks_to_skip // settings.chain.epoch.height
+                                    begin_block_epoch = contract_epoch_end + (epochs_to_skip * settings.chain.epoch.height) + 1
+                                    end_block_epoch = begin_block_epoch + settings.chain.epoch.height - 1
+                                
+                                use_force_skip = True
+                                self._logger.warning(
+                                    'Large block gap detected: {} blocks (>= threshold {}). '
+                                    'force_skip_epoch enabled. Will use forceSkipEpoch to skip from epoch end {} to block {} - {} '
+                                    'to prevent snapshotter overload.',
+                                    block_gap, self.GAP_THRESHOLD, contract_epoch_end, begin_block_epoch, end_block_epoch
+                                )
+                            else:
+                                # No epoch on contract yet - use forceSkipEpoch to start from near current head
+                                begin_block_epoch = cur_block - settings.chain.epoch.head_offset - self.GAP_OFFSET
+                                end_block_epoch = cur_block - settings.chain.epoch.head_offset
+                                use_force_skip = True
+                                self._logger.warning(
+                                    'Large block gap detected: {} blocks (>= threshold {}). '
+                                    'force_skip_epoch enabled. No epoch on contract. Will use forceSkipEpoch to start from block {} - {}',
+                                    block_gap, self.GAP_THRESHOLD, begin_block_epoch, end_block_epoch
+                                )
+                        except Exception as ex:
+                            self._logger.error(
+                                'Error fetching current epoch from contract: {}. Will try forceSkipEpoch.',
+                                ex
+                            )
+                            # Fallback: try forceSkipEpoch
+                            begin_block_epoch = cur_block - settings.chain.epoch.head_offset - self.GAP_OFFSET
+                            end_block_epoch = cur_block - settings.chain.epoch.head_offset
+                            use_force_skip = True
+                        
+                        # Reset polling interval for fresh start
+                        self.current_polling_interval = 1.0
+                        # Recalculate block_gap after reset
+                        block_gap = end_block_epoch - begin_block_epoch + 1
+                    elif block_gap >= self.GAP_THRESHOLD and not force_skip_enabled:
+                        # Large gap detected but force_skip_epoch is disabled
+                        # Sync begin_block_epoch with on-chain state for sequential release
+                        try:
+                            last_contract_epoch = await self._fetch_epoch_from_contract()
+                            if last_contract_epoch != -1:
+                                contract_epoch_end = last_contract_epoch
+                                if begin_block_epoch < contract_epoch_end + 1:
+                                    self._logger.warning(
+                                        'Large block gap detected: {} blocks (>= threshold {}). '
+                                        'force_skip_epoch disabled. Syncing with on-chain epoch (end: {}). '
+                                        'Will release sequentially from block {} to prevent snapshotter overload.',
+                                        block_gap, self.GAP_THRESHOLD, contract_epoch_end, contract_epoch_end + 1
+                                    )
+                                    begin_block_epoch = contract_epoch_end + 1
+                        except Exception as ex:
+                            self._logger.error(
+                                'Error fetching current epoch from contract: {}. Using current begin_block_epoch.',
+                                ex
+                            )
+                        
                         end_block_epoch = cur_block - settings.chain.epoch.head_offset
                         # Reset polling interval for fresh start
                         self.current_polling_interval = 1.0
@@ -302,6 +366,7 @@ class EpochGenerator:
                     )
                     
                     epochs_processed = 0
+                    # use_force_skip is set above when gap >= threshold
                     for epoch in chunks(begin_block_epoch, end_block_epoch, settings.chain.epoch.height):
                         if epoch[1] - epoch[0] + 1 < settings.chain.epoch.height:
                             self._logger.debug(
@@ -317,8 +382,9 @@ class EpochGenerator:
                         )
 
                         try:
+                            function_name = 'forceSkipEpoch' if use_force_skip else 'releaseEpoch'
                             self._logger.info(
-                                'Attempting to release epoch {}', epoch_block,
+                                'Attempting to {} epoch {}', function_name, epoch_block,
                             )
                             if self.release_counter % self._check_receipt_every == 0 or self._force_tx:
                                 self.release_counter += 1
@@ -327,7 +393,7 @@ class EpochGenerator:
                                     settings.validator_epoch_address,
                                     settings.validator_epoch_private_key,
                                     protocol_state_contract,
-                                    'releaseEpoch',
+                                    function_name,
                                     self._nonce,
                                     self.gas if not self._force_tx else self.high_gas,
                                     Web3.to_checksum_address(
@@ -344,7 +410,7 @@ class EpochGenerator:
                                         settings.new_validator_epoch_address,
                                         settings.new_validator_epoch_private_key,
                                         new_protocol_state_contract,
-                                        'releaseEpoch',
+                                        function_name,
                                         self._new_nonce,
                                         self.gas if not self._force_tx else self.high_gas,
                                         Web3.to_checksum_address(
@@ -407,7 +473,7 @@ class EpochGenerator:
                                     settings.validator_epoch_address,
                                     settings.validator_epoch_private_key,
                                     protocol_state_contract,
-                                    'releaseEpoch',
+                                    function_name,
                                     self._nonce,
                                     self.gas,
                                     Web3.to_checksum_address(
@@ -424,7 +490,7 @@ class EpochGenerator:
                                         settings.new_validator_epoch_address,
                                         settings.new_validator_epoch_private_key,
                                         new_protocol_state_contract,
-                                        'releaseEpoch',
+                                        function_name,
                                         self._new_nonce,
                                         self.gas,
                                         Web3.to_checksum_address(
