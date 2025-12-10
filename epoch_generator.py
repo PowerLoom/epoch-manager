@@ -561,6 +561,17 @@ class EpochGenerator:
                                     )
                                 else:
                                     issue = None
+                                    # Log successful releases
+                                    if receipt and receipt.get('status') == 1:
+                                        self._logger.info(
+                                            '✅ Epoch Released to Legacy Contract! TX: {}',
+                                            tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash
+                                        )
+                                    if new_receipt and new_receipt.get('status') == 1:
+                                        self._logger.info(
+                                            '✅ Epoch Released to New Contract! TX: {}',
+                                            new_tx_hash.hex() if hasattr(new_tx_hash, 'hex') else new_tx_hash
+                                        )
 
                                 if issue:
                                     await send_failure_notifications(client=self._client, message=issue)
@@ -639,9 +650,15 @@ class EpochGenerator:
                                 self._new_nonce += 1
 
                             epochs_processed += 1
-                            self._logger.debug(
-                                'Epoch Released! Transaction hash: {}', tx_hash,
-                            )
+                            # Log both transaction hashes separately
+                            if tx_hash:
+                                self._logger.debug(
+                                    'Epoch Released to Legacy Contract! Transaction hash: {}', tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash,
+                                )
+                            if new_tx_hash:
+                                self._logger.debug(
+                                    'Epoch Released to New Contract! Transaction hash: {}', new_tx_hash.hex() if hasattr(new_tx_hash, 'hex') else new_tx_hash,
+                                )
                         except Exception as ex:
                             self._logger.error(
                                 'Unable to release epoch, error: {}', ex,
