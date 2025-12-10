@@ -428,8 +428,9 @@ class EpochGenerator:
                             
                             if self.release_counter % self._check_receipt_every == 0 or self._force_tx:
                                 self.release_counter += 1
-                                # Release to legacy contract
-                                tx_hash, receipt = await write_transaction_with_receipt(
+                                
+                                # Release to both contracts concurrently
+                                legacy_task = write_transaction_with_receipt(
                                     w3,
                                     settings.validator_epoch_address,
                                     settings.validator_epoch_private_key,
@@ -443,10 +444,10 @@ class EpochGenerator:
                                     legacy_release_epoch['begin'],
                                     legacy_release_epoch['end'],
                                 )
-
-                                # Submit to new contracts if configured
+                                
+                                tasks = [legacy_task]
                                 if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
-                                    new_tx_hash, new_receipt = await write_transaction_with_receipt(
+                                    new_task = write_transaction_with_receipt(
                                         w3,
                                         settings.new_validator_epoch_address,
                                         settings.new_validator_epoch_private_key,
@@ -459,6 +460,20 @@ class EpochGenerator:
                                         ),
                                         new_release_epoch['begin'],
                                         new_release_epoch['end'],
+                                    )
+                                    tasks.append(new_task)
+                                
+                                # Execute both releases concurrently
+                                results = await asyncio.gather(*tasks, return_exceptions=True)
+                                tx_hash, receipt = results[0] if not isinstance(results[0], Exception) else (None, None)
+                                
+                                new_tx_hash = None
+                                new_receipt = None
+                                if len(results) > 1 and not isinstance(results[1], Exception):
+                                    new_tx_hash, new_receipt = results[1]
+                                elif len(results) > 1 and isinstance(results[1], Exception):
+                                    self._logger.error(
+                                        'Error releasing to new contract: {}', results[1]
                                     )
 
                                 # Check both transaction receipts
@@ -571,7 +586,9 @@ class EpochGenerator:
 
                             else:
                                 self.release_counter += 1
-                                tx_hash = await write_transaction(
+                                
+                                # Release to both contracts concurrently
+                                legacy_task = write_transaction(
                                     w3,
                                     settings.validator_epoch_address,
                                     settings.validator_epoch_private_key,
@@ -582,13 +599,13 @@ class EpochGenerator:
                                     Web3.to_checksum_address(
                                         data_market_address,
                                     ),
-                                    epoch_block['begin'],
-                                    epoch_block['end'],
+                                    legacy_release_epoch['begin'],
+                                    legacy_release_epoch['end'],
                                 )
-
-                                # Submit to new contracts if configured
+                                
+                                tasks = [legacy_task]
                                 if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
-                                    new_tx_hash = await write_transaction(
+                                    new_task = write_transaction(
                                         w3,
                                         settings.new_validator_epoch_address,
                                         settings.new_validator_epoch_private_key,
@@ -599,9 +616,23 @@ class EpochGenerator:
                                         Web3.to_checksum_address(
                                             new_data_market_address,
                                         ),
-                                        epoch_block['begin'],
-                                        epoch_block['end'],
+                                        new_release_epoch['begin'],
+                                        new_release_epoch['end'],
                                     )
+                                    tasks.append(new_task)
+                                
+                                # Execute both releases concurrently
+                                results = await asyncio.gather(*tasks, return_exceptions=True)
+                                tx_hash = results[0] if not isinstance(results[0], Exception) else None
+                                
+                                new_tx_hash = None
+                                if len(results) > 1:
+                                    if not isinstance(results[1], Exception):
+                                        new_tx_hash = results[1]
+                                    else:
+                                        self._logger.error(
+                                            'Error releasing to new contract: {}', results[1]
+                                        )
 
                             self._nonce += 1
                             if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
