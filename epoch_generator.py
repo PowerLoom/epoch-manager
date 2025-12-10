@@ -146,11 +146,13 @@ class EpochGenerator:
         stop=stop_after_attempt(settings.anchor_chain.rpc.retry),
     )
     async def _fetch_epoch_from_contract(self) -> int:
+        """Fetch the next epoch to release from the legacy contract only.
+        
+        Note: New contract releases are a stopgap feature and should not affect
+        the epoch release logic. We only use the legacy contract to determine
+        what epoch to release next.
+        """
         last_epoch_data = await protocol_state_contract.functions.currentEpoch(Web3.to_checksum_address(data_market_address)).call()
-        if new_protocol_state_contract and new_data_market_address:
-            new_last_epoch_data = await new_protocol_state_contract.functions.currentEpoch(Web3.to_checksum_address(new_data_market_address)).call()
-            if new_last_epoch_data[1]:
-                return new_last_epoch_data[1] + 1
         if last_epoch_data[1]:
             self._logger.debug(
                 'Found last epoch block : {} in contract.', last_epoch_data[
@@ -384,11 +386,49 @@ class EpochGenerator:
 
                         try:
                             function_name = 'forceSkipEpoch' if use_force_skip else 'releaseEpoch'
+                            
+                            # Fetch each contract's current epoch independently and determine what each needs
+                            legacy_epoch_data = await protocol_state_contract.functions.currentEpoch(
+                                Web3.to_checksum_address(data_market_address)
+                            ).call()
+                            legacy_epoch_end = legacy_epoch_data[1] if legacy_epoch_data[1] else None
+                            legacy_next_epoch = legacy_epoch_end + 1 if legacy_epoch_end is not None else None
+                            
+                            new_epoch_end = None
+                            new_next_epoch = None
+                            if new_protocol_state_contract and new_data_market_address:
+                                new_epoch_data = await new_protocol_state_contract.functions.currentEpoch(
+                                    Web3.to_checksum_address(new_data_market_address)
+                                ).call()
+                                new_epoch_end = new_epoch_data[1] if new_epoch_data[1] else None
+                                new_next_epoch = new_epoch_end + 1 if new_epoch_end is not None else None
+                            
+                            # Determine what epoch to release to legacy contract
+                            legacy_release_epoch = epoch_block.copy()
+                            if legacy_next_epoch is not None and epoch_block['begin'] != legacy_next_epoch:
+                                self._logger.info(
+                                    'Legacy contract current epoch end: {}, adjusting release from {} to {}',
+                                    legacy_epoch_end, epoch_block['begin'], legacy_next_epoch
+                                )
+                                legacy_release_epoch = {'begin': legacy_next_epoch, 'end': legacy_next_epoch}
+                            
+                            # Determine what epoch to release to release to new contract
+                            new_release_epoch = epoch_block.copy()
+                            if new_next_epoch is not None and epoch_block['begin'] != new_next_epoch:
+                                self._logger.info(
+                                    'New contract current epoch end: {}, adjusting release from {} to {}',
+                                    new_epoch_end, epoch_block['begin'], new_next_epoch
+                                )
+                                new_release_epoch = {'begin': new_next_epoch, 'end': new_next_epoch}
+                            
                             self._logger.info(
-                                'Attempting to {} epoch {}', function_name, epoch_block,
+                                'Attempting to {} epoch - Legacy: {}, New: {}',
+                                function_name, legacy_release_epoch, new_release_epoch if new_protocol_state_contract else 'N/A'
                             )
+                            
                             if self.release_counter % self._check_receipt_every == 0 or self._force_tx:
                                 self.release_counter += 1
+                                # Release to legacy contract
                                 tx_hash, receipt = await write_transaction_with_receipt(
                                     w3,
                                     settings.validator_epoch_address,
@@ -400,8 +440,8 @@ class EpochGenerator:
                                     Web3.to_checksum_address(
                                         data_market_address,
                                     ),
-                                    epoch_block['begin'],
-                                    epoch_block['end'],
+                                    legacy_release_epoch['begin'],
+                                    legacy_release_epoch['end'],
                                 )
 
                                 # Submit to new contracts if configured
@@ -417,8 +457,8 @@ class EpochGenerator:
                                         Web3.to_checksum_address(
                                             new_data_market_address,
                                         ),
-                                        epoch_block['begin'],
-                                        epoch_block['end'],
+                                        new_release_epoch['begin'],
+                                        new_release_epoch['end'],
                                     )
 
                                 # Check both transaction receipts
@@ -596,9 +636,15 @@ class EpochGenerator:
                                     settings.new_validator_epoch_address,
                                 )
 
-                            last_contract_epoch = await self._fetch_epoch_from_contract()
-                            if last_contract_epoch != -1:
-                                begin_block_epoch = last_contract_epoch
+                            # Fetch epoch again to sync with contract state
+                            # Use the minimum epoch from both contracts to ensure sequential release
+                            next_epoch_to_release = await self._fetch_epoch_from_contract()
+                            if next_epoch_to_release != -1:
+                                self._logger.info(
+                                    'Syncing begin_block_epoch to contract state after error: {} -> {}',
+                                    begin_block_epoch, next_epoch_to_release
+                                )
+                                begin_block_epoch = next_epoch_to_release
 
                             self._force_tx = True
                             break
