@@ -282,18 +282,19 @@ class EpochGenerator:
                     elif block_gap >= self.GAP_THRESHOLD and not force_skip_enabled:
                         # Large gap detected but force_skip_epoch is disabled
                         # Sync begin_block_epoch with on-chain state for sequential release
+                        # _fetch_epoch_from_contract() already returns currentEpoch.end + 1
                         try:
-                            last_contract_epoch = await self._fetch_epoch_from_contract()
-                            if last_contract_epoch != -1:
-                                contract_epoch_end = last_contract_epoch
-                                if begin_block_epoch < contract_epoch_end + 1:
+                            next_epoch_to_release = await self._fetch_epoch_from_contract()
+                            if next_epoch_to_release != -1:
+                                # next_epoch_to_release is already currentEpoch.end + 1
+                                if begin_block_epoch < next_epoch_to_release:
                                     self._logger.warning(
                                         'Large block gap detected: {} blocks (>= threshold {}). '
-                                        'force_skip_epoch disabled. Syncing with on-chain epoch (end: {}). '
+                                        'force_skip_epoch disabled. Syncing with on-chain epoch. '
                                         'Will release sequentially from block {} to prevent snapshotter overload.',
-                                        block_gap, self.GAP_THRESHOLD, contract_epoch_end, contract_epoch_end + 1
+                                        block_gap, self.GAP_THRESHOLD, next_epoch_to_release
                                     )
-                                    begin_block_epoch = contract_epoch_end + 1
+                                    begin_block_epoch = next_epoch_to_release
                         except Exception as ex:
                             self._logger.error(
                                 'Error fetching current epoch from contract: {}. Using current begin_block_epoch.',
@@ -422,15 +423,77 @@ class EpochGenerator:
 
                                 # Check both transaction receipts
                                 if receipt['status'] != 1:
-                                    self._logger.error(
-                                        'Unable to release epoch (old contract), txn failed! Got receipt: {}', receipt,
-                                    )
-                                    issue = GenericTxnIssue(
-                                        accountAddress=settings.validator_epoch_address,
-                                        epochBegin=epoch_block['begin'],
-                                        issueType='EpochReleaseTxnFailed',
-                                        extra=Web3.to_json(receipt),
-                                    )
+                                    # Check if forceSkipEpoch failed due to permission issues
+                                    if use_force_skip:
+                                        self._logger.error(
+                                            'forceSkipEpoch failed (likely permission issue - requires owner). '
+                                            'Falling back to sequential releaseEpoch. Receipt: {}', receipt,
+                                        )
+                                        # Fall back to sequential releaseEpoch
+                                        use_force_skip = False
+                                        function_name = 'releaseEpoch'
+                                        # Sync with on-chain epoch for sequential release
+                                        # _fetch_epoch_from_contract() already returns currentEpoch.end + 1
+                                        try:
+                                            next_epoch_to_release = await self._fetch_epoch_from_contract()
+                                            if next_epoch_to_release != -1:
+                                                # next_epoch_to_release is already currentEpoch.end + 1
+                                                if epoch_block['begin'] != next_epoch_to_release:
+                                                    self._logger.warning(
+                                                        'Adjusting epoch to sequential: {} -> {}',
+                                                        epoch_block['begin'], next_epoch_to_release
+                                                    )
+                                                    epoch_block['begin'] = next_epoch_to_release
+                                                    epoch_block['end'] = next_epoch_to_release
+                                                    # Retry with releaseEpoch
+                                                    tx_hash, receipt = await write_transaction_with_receipt(
+                                                        w3,
+                                                        settings.validator_epoch_address,
+                                                        settings.validator_epoch_private_key,
+                                                        protocol_state_contract,
+                                                        'releaseEpoch',
+                                                        self._nonce,
+                                                        self.gas if not self._force_tx else self.high_gas,
+                                                        Web3.to_checksum_address(
+                                                            data_market_address,
+                                                        ),
+                                                        epoch_block['begin'],
+                                                        epoch_block['end'],
+                                                    )
+                                                    if receipt['status'] == 1:
+                                                        # Success with releaseEpoch, continue normally
+                                                        self._logger.info(
+                                                            'Successfully released epoch {} using releaseEpoch after forceSkipEpoch failed',
+                                                            epoch_block
+                                                        )
+                                                        # Update nonce and continue
+                                                        self._nonce += 1
+                                                        if settings.new_validator_epoch_address:
+                                                            self._new_nonce += 1
+                                                        epochs_processed += 1
+                                                        self._force_tx = False
+                                                        # Skip the error handling below since we succeeded
+                                                        continue
+                                                    else:
+                                                        # Still failed, log error
+                                                        self._logger.error(
+                                                            'releaseEpoch also failed after forceSkipEpoch. Receipt: {}', receipt
+                                                        )
+                                        except Exception as fallback_ex:
+                                            self._logger.error(
+                                                'Error during fallback to releaseEpoch: {}', fallback_ex
+                                            )
+                                    
+                                    if receipt['status'] != 1:
+                                        self._logger.error(
+                                            'Unable to release epoch (old contract), txn failed! Got receipt: {}', receipt,
+                                        )
+                                        issue = GenericTxnIssue(
+                                            accountAddress=settings.validator_epoch_address,
+                                            epochBegin=epoch_block['begin'],
+                                            issueType='EpochReleaseTxnFailed',
+                                            extra=Web3.to_json(receipt),
+                                        )
                                 elif new_protocol_state_contract and new_data_market_address and new_receipt['status'] != 1:
                                     self._logger.error(
                                         'Unable to release epoch (new contract), txn failed! Got receipt: {}', new_receipt,
