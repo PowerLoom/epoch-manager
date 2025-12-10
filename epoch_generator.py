@@ -64,7 +64,6 @@ class EpochGenerator:
         self._force_tx = False
         self.gas = settings.anchor_chain.default_gas_in_gwei
         self.high_gas = settings.anchor_chain.default_gas_in_gwei*2
-        self._check_receipt_every = 10
         
         # Adaptive polling configuration (similar to epochsyncer)
         self.MIN_POLLING_INTERVAL = 0.1  # 100ms - fast polling for catch-up
@@ -426,239 +425,181 @@ class EpochGenerator:
                                 function_name, legacy_release_epoch, new_release_epoch if new_protocol_state_contract else 'N/A'
                             )
                             
-                            if self.release_counter % self._check_receipt_every == 0 or self._force_tx:
-                                self.release_counter += 1
-                                
-                                # Release to both contracts concurrently
-                                legacy_task = write_transaction_with_receipt(
+                            # Always check receipts for reliability - ensures we detect failures immediately
+                            # and maintain nonce consistency. Removed the non-receipt path which caused
+                            # silent failures and nonce drift issues.
+                            self.release_counter += 1
+                            
+                            # Release to both contracts concurrently
+                            legacy_task = write_transaction_with_receipt(
+                                w3,
+                                settings.validator_epoch_address,
+                                settings.validator_epoch_private_key,
+                                protocol_state_contract,
+                                function_name,
+                                self._nonce,
+                                self.gas if not self._force_tx else self.high_gas,
+                                Web3.to_checksum_address(
+                                    data_market_address,
+                                ),
+                                legacy_release_epoch['begin'],
+                                legacy_release_epoch['end'],
+                            )
+                            
+                            tasks = [legacy_task]
+                            if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
+                                new_task = write_transaction_with_receipt(
                                     w3,
-                                    settings.validator_epoch_address,
-                                    settings.validator_epoch_private_key,
-                                    protocol_state_contract,
+                                    settings.new_validator_epoch_address,
+                                    settings.new_validator_epoch_private_key,
+                                    new_protocol_state_contract,
                                     function_name,
-                                    self._nonce,
+                                    self._new_nonce,
                                     self.gas if not self._force_tx else self.high_gas,
                                     Web3.to_checksum_address(
-                                        data_market_address,
+                                        new_data_market_address,
                                     ),
-                                    legacy_release_epoch['begin'],
-                                    legacy_release_epoch['end'],
+                                    new_release_epoch['begin'],
+                                    new_release_epoch['end'],
                                 )
-                                
-                                tasks = [legacy_task]
-                                if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
-                                    new_task = write_transaction_with_receipt(
-                                        w3,
-                                        settings.new_validator_epoch_address,
-                                        settings.new_validator_epoch_private_key,
-                                        new_protocol_state_contract,
-                                        function_name,
-                                        self._new_nonce,
-                                        self.gas if not self._force_tx else self.high_gas,
-                                        Web3.to_checksum_address(
-                                            new_data_market_address,
-                                        ),
-                                        new_release_epoch['begin'],
-                                        new_release_epoch['end'],
-                                    )
-                                    tasks.append(new_task)
-                                
-                                # Execute both releases concurrently
-                                results = await asyncio.gather(*tasks, return_exceptions=True)
-                                tx_hash, receipt = results[0] if not isinstance(results[0], Exception) else (None, None)
-                                
-                                new_tx_hash = None
-                                new_receipt = None
-                                if len(results) > 1 and not isinstance(results[1], Exception):
-                                    new_tx_hash, new_receipt = results[1]
-                                elif len(results) > 1 and isinstance(results[1], Exception):
-                                    self._logger.error(
-                                        'Error releasing to new contract: {}', results[1]
-                                    )
+                                tasks.append(new_task)
+                            
+                            # Execute both releases concurrently
+                            results = await asyncio.gather(*tasks, return_exceptions=True)
+                            tx_hash, receipt = results[0] if not isinstance(results[0], Exception) else (None, None)
+                            
+                            new_tx_hash = None
+                            new_receipt = None
+                            if len(results) > 1 and not isinstance(results[1], Exception):
+                                new_tx_hash, new_receipt = results[1]
+                            elif len(results) > 1 and isinstance(results[1], Exception):
+                                self._logger.error(
+                                    'Error releasing to new contract: {}', results[1]
+                                )
 
-                                # Check both transaction receipts
-                                if receipt['status'] != 1:
-                                    # Check if forceSkipEpoch failed due to permission issues
-                                    if use_force_skip:
-                                        self._logger.error(
-                                            'forceSkipEpoch failed (likely permission issue - requires owner). '
-                                            'Falling back to sequential releaseEpoch. Receipt: {}', receipt,
-                                        )
-                                        # Fall back to sequential releaseEpoch
-                                        use_force_skip = False
-                                        function_name = 'releaseEpoch'
-                                        # Sync with on-chain epoch for sequential release
-                                        # _fetch_epoch_from_contract() already returns currentEpoch.end + 1
-                                        try:
-                                            next_epoch_to_release = await self._fetch_epoch_from_contract()
-                                            if next_epoch_to_release != -1:
-                                                # next_epoch_to_release is already currentEpoch.end + 1
-                                                if epoch_block['begin'] != next_epoch_to_release:
-                                                    self._logger.warning(
-                                                        'Adjusting epoch to sequential: {} -> {}',
-                                                        epoch_block['begin'], next_epoch_to_release
-                                                    )
-                                                    epoch_block['begin'] = next_epoch_to_release
-                                                    epoch_block['end'] = next_epoch_to_release
-                                                    # Retry with releaseEpoch
-                                                    tx_hash, receipt = await write_transaction_with_receipt(
-                                                        w3,
-                                                        settings.validator_epoch_address,
-                                                        settings.validator_epoch_private_key,
-                                                        protocol_state_contract,
-                                                        'releaseEpoch',
-                                                        self._nonce,
-                                                        self.gas if not self._force_tx else self.high_gas,
-                                                        Web3.to_checksum_address(
-                                                            data_market_address,
-                                                        ),
-                                                        epoch_block['begin'],
-                                                        epoch_block['end'],
-                                                    )
-                                                    if receipt['status'] == 1:
-                                                        # Success with releaseEpoch, continue normally
-                                                        self._logger.info(
-                                                            'Successfully released epoch {} using releaseEpoch after forceSkipEpoch failed',
-                                                            epoch_block
-                                                        )
-                                                        # Update nonce and continue
-                                                        self._nonce += 1
-                                                        if settings.new_validator_epoch_address:
-                                                            self._new_nonce += 1
-                                                        epochs_processed += 1
-                                                        self._force_tx = False
-                                                        # Skip the error handling below since we succeeded
-                                                        continue
-                                                    else:
-                                                        # Still failed, log error
-                                                        self._logger.error(
-                                                            'releaseEpoch also failed after forceSkipEpoch. Receipt: {}', receipt
-                                                        )
-                                        except Exception as fallback_ex:
-                                            self._logger.error(
-                                                'Error during fallback to releaseEpoch: {}', fallback_ex
-                                            )
-                                    
-                                    if receipt['status'] != 1:
-                                        self._logger.error(
-                                            'Unable to release epoch (old contract), txn failed! Got receipt: {}', receipt,
-                                        )
-                                        issue = GenericTxnIssue(
-                                            accountAddress=settings.validator_epoch_address,
-                                            epochBegin=epoch_block['begin'],
-                                            issueType='EpochReleaseTxnFailed',
-                                            extra=Web3.to_json(receipt),
-                                        )
-                                elif new_protocol_state_contract and new_data_market_address and new_receipt['status'] != 1:
+                            # Check both transaction receipts
+                            if receipt['status'] != 1:
+                                # Check if forceSkipEpoch failed due to permission issues
+                                if use_force_skip:
                                     self._logger.error(
-                                        'Unable to release epoch (new contract), txn failed! Got receipt: {}', new_receipt,
+                                        'forceSkipEpoch failed (likely permission issue - requires owner). '
+                                        'Falling back to sequential releaseEpoch. Receipt: {}', receipt,
+                                    )
+                                    # Fall back to sequential releaseEpoch
+                                    use_force_skip = False
+                                    function_name = 'releaseEpoch'
+                                    # Sync with on-chain epoch for sequential release
+                                    # _fetch_epoch_from_contract() already returns currentEpoch.end + 1
+                                    try:
+                                        next_epoch_to_release = await self._fetch_epoch_from_contract()
+                                        if next_epoch_to_release != -1:
+                                            # next_epoch_to_release is already currentEpoch.end + 1
+                                            if epoch_block['begin'] != next_epoch_to_release:
+                                                self._logger.warning(
+                                                    'Adjusting epoch to sequential: {} -> {}',
+                                                    epoch_block['begin'], next_epoch_to_release
+                                                )
+                                                epoch_block['begin'] = next_epoch_to_release
+                                                epoch_block['end'] = next_epoch_to_release
+                                                # Retry with releaseEpoch
+                                                tx_hash, receipt = await write_transaction_with_receipt(
+                                                    w3,
+                                                    settings.validator_epoch_address,
+                                                    settings.validator_epoch_private_key,
+                                                    protocol_state_contract,
+                                                    'releaseEpoch',
+                                                    self._nonce,
+                                                    self.gas if not self._force_tx else self.high_gas,
+                                                    Web3.to_checksum_address(
+                                                        data_market_address,
+                                                    ),
+                                                    epoch_block['begin'],
+                                                    epoch_block['end'],
+                                                )
+                                                if receipt['status'] == 1:
+                                                    # Success with releaseEpoch, continue normally
+                                                    self._logger.info(
+                                                        'Successfully released epoch {} using releaseEpoch after forceSkipEpoch failed',
+                                                        epoch_block
+                                                    )
+                                                    # Update nonce and continue
+                                                    self._nonce += 1
+                                                    if settings.new_validator_epoch_address:
+                                                        self._new_nonce += 1
+                                                    epochs_processed += 1
+                                                    self._force_tx = False
+                                                    # Skip the error handling below since we succeeded
+                                                    continue
+                                                else:
+                                                    # Still failed, log error
+                                                    self._logger.error(
+                                                        'releaseEpoch also failed after forceSkipEpoch. Receipt: {}', receipt
+                                                    )
+                                    except Exception as fallback_ex:
+                                        self._logger.error(
+                                            'Error during fallback to releaseEpoch: {}', fallback_ex
+                                        )
+                                
+                                if receipt['status'] != 1:
+                                    self._logger.error(
+                                        'Unable to release epoch (old contract), txn failed! Got receipt: {}', receipt,
                                     )
                                     issue = GenericTxnIssue(
                                         accountAddress=settings.validator_epoch_address,
                                         epochBegin=epoch_block['begin'],
                                         issueType='EpochReleaseTxnFailed',
-                                        extra=Web3.to_json(new_receipt),
+                                        extra=Web3.to_json(receipt),
                                     )
-                                else:
-                                    issue = None
-                                    # Log successful releases
-                                    if receipt and receipt.get('status') == 1:
-                                        self._logger.info(
-                                            '✅ Epoch Released to Legacy Contract! TX: {}',
-                                            tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash
-                                        )
-                                    if new_receipt and new_receipt.get('status') == 1:
-                                        self._logger.info(
-                                            '✅ Epoch Released to New Contract! TX: {}',
-                                            new_tx_hash.hex() if hasattr(new_tx_hash, 'hex') else new_tx_hash
-                                        )
-
-                                if issue:
-                                    await send_failure_notifications(client=self._client, message=issue)
-
-                                    # sleep for 30 seconds to avoid nonce collision
-                                    time.sleep(30)
-                                    # reset nonce
-                                    self._nonce = await w3.eth.get_transaction_count(
-                                        settings.validator_epoch_address,
-                                    )
-                                    if settings.new_validator_epoch_address:
-                                        self._new_nonce = await w3.eth.get_transaction_count(
-                                            settings.new_validator_epoch_address,
-                                        )
-
-                                    last_contract_epoch = await self._fetch_epoch_from_contract()
-                                    if last_contract_epoch != -1:
-                                        begin_block_epoch = last_contract_epoch
-                                    self._force_tx = True
-                                    break
-                                else:
-                                    self._force_tx = False
-
+                            elif new_protocol_state_contract and new_data_market_address and new_receipt['status'] != 1:
+                                self._logger.error(
+                                    'Unable to release epoch (new contract), txn failed! Got receipt: {}', new_receipt,
+                                )
+                                issue = GenericTxnIssue(
+                                    accountAddress=settings.validator_epoch_address,
+                                    epochBegin=epoch_block['begin'],
+                                    issueType='EpochReleaseTxnFailed',
+                                    extra=Web3.to_json(new_receipt),
+                                )
                             else:
-                                self.release_counter += 1
-                                
-                                # Release to both contracts concurrently
-                                legacy_task = write_transaction(
-                                    w3,
-                                    settings.validator_epoch_address,
-                                    settings.validator_epoch_private_key,
-                                    protocol_state_contract,
-                                    function_name,
-                                    self._nonce,
-                                    self.gas,
-                                    Web3.to_checksum_address(
-                                        data_market_address,
-                                    ),
-                                    legacy_release_epoch['begin'],
-                                    legacy_release_epoch['end'],
-                                )
-                                
-                                tasks = [legacy_task]
-                                if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
-                                    new_task = write_transaction(
-                                        w3,
-                                        settings.new_validator_epoch_address,
-                                        settings.new_validator_epoch_private_key,
-                                        new_protocol_state_contract,
-                                        function_name,
-                                        self._new_nonce,
-                                        self.gas,
-                                        Web3.to_checksum_address(
-                                            new_data_market_address,
-                                        ),
-                                        new_release_epoch['begin'],
-                                        new_release_epoch['end'],
+                                issue = None
+                                # Log successful releases
+                                if receipt and receipt.get('status') == 1:
+                                    self._logger.info(
+                                        '✅ Epoch Released to Legacy Contract! TX: {}',
+                                        tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash
                                     )
-                                    tasks.append(new_task)
-                                
-                                # Execute both releases concurrently
-                                results = await asyncio.gather(*tasks, return_exceptions=True)
-                                tx_hash = results[0] if not isinstance(results[0], Exception) else None
-                                
-                                new_tx_hash = None
-                                if len(results) > 1:
-                                    if not isinstance(results[1], Exception):
-                                        new_tx_hash = results[1]
-                                    else:
-                                        self._logger.error(
-                                            'Error releasing to new contract: {}', results[1]
-                                        )
+                                if new_receipt and new_receipt.get('status') == 1:
+                                    self._logger.info(
+                                        '✅ Epoch Released to New Contract! TX: {}',
+                                        new_tx_hash.hex() if hasattr(new_tx_hash, 'hex') else new_tx_hash
+                                    )
 
-                            self._nonce += 1
-                            if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
-                                self._new_nonce += 1
+                            if issue:
+                                await send_failure_notifications(client=self._client, message=issue)
 
-                            epochs_processed += 1
-                            # Log both transaction hashes separately
-                            if tx_hash:
-                                self._logger.debug(
-                                    'Epoch Released to Legacy Contract! Transaction hash: {}', tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash,
+                                # sleep for 30 seconds to avoid nonce collision
+                                time.sleep(30)
+                                # reset nonce
+                                self._nonce = await w3.eth.get_transaction_count(
+                                    settings.validator_epoch_address,
                                 )
-                            if new_tx_hash:
-                                self._logger.debug(
-                                    'Epoch Released to New Contract! Transaction hash: {}', new_tx_hash.hex() if hasattr(new_tx_hash, 'hex') else new_tx_hash,
-                                )
+                                if settings.new_validator_epoch_address:
+                                    self._new_nonce = await w3.eth.get_transaction_count(
+                                        settings.new_validator_epoch_address,
+                                    )
+
+                                last_contract_epoch = await self._fetch_epoch_from_contract()
+                                if last_contract_epoch != -1:
+                                    begin_block_epoch = last_contract_epoch
+                                self._force_tx = True
+                                break
+                            else:
+                                self._force_tx = False
+                                # Success - increment nonces and continue
+                                self._nonce += 1
+                                if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
+                                    self._new_nonce += 1
+                                epochs_processed += 1
                         except Exception as ex:
                             self._logger.error(
                                 'Unable to release epoch, error: {}', ex,
