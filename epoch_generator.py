@@ -65,6 +65,16 @@ class EpochGenerator:
         self.gas = settings.anchor_chain.default_gas_in_gwei
         self.high_gas = settings.anchor_chain.default_gas_in_gwei*2
         self._check_receipt_every = 10
+        
+        # Adaptive polling configuration (similar to epochsyncer)
+        self.MIN_POLLING_INTERVAL = 0.1  # 100ms - fast polling for catch-up
+        self.MAX_POLLING_INTERVAL = 5.0  # 5s - slow polling when caught up
+        self.current_polling_interval = 1.0  # Start with 1s
+        self.ADAPTIVE_POLLING = True
+        
+        # Gap detection threshold
+        self.GAP_THRESHOLD = 10  # blocks - if gap >= this, skip catch-up and start fresh
+        self.GAP_OFFSET = 1  # Start from current_head - offset when gap is too large
 
     async def setup(self):
         self._nonce = await w3.eth.get_transaction_count(
@@ -90,6 +100,38 @@ class EpochGenerator:
             timeout=Timeout(timeout=30.0),
             follow_redirects=False,
             transport=self._async_transport,
+        )
+
+    async def _adaptive_polling_adjustment(self, blocks_processed: int, processing_time: float):
+        """
+        Adjust polling interval based on performance metrics.
+        
+        Similar to epochsyncer's adaptive polling - adjusts interval based on throughput.
+        High throughput (> 10 blocks/s) -> decrease interval (poll more frequently)
+        Low throughput (< 1 block/s) -> increase interval (poll less frequently)
+        """
+        if not self.ADAPTIVE_POLLING:
+            return
+        
+        # Calculate blocks per second
+        blocks_per_second = blocks_processed / max(processing_time, 0.001)
+        
+        # Adjust polling interval based on throughput
+        if blocks_per_second > 10:  # High throughput - poll more frequently
+            self.current_polling_interval = max(
+                self.current_polling_interval * 0.8,
+                self.MIN_POLLING_INTERVAL
+            )
+        elif blocks_per_second < 1:  # Low throughput - poll less frequently
+            self.current_polling_interval = min(
+                self.current_polling_interval * 1.5,
+                self.MAX_POLLING_INTERVAL
+            )
+        
+        self._logger.debug(
+            'Adaptive polling: {:.2f} blocks/s, interval: {:.2f}s',
+            blocks_per_second,
+            self.current_polling_interval
         )
 
     def _generic_exit_handler(self, signum, sigframe):
@@ -162,6 +204,8 @@ class EpochGenerator:
                 continue
             else:
                 self._logger.debug('Got current head of chain: {}', cur_block)
+                processing_start_time = time.time()
+                
                 if not begin_block_epoch:
                     self._logger.debug('Begin of epoch not set')
                     begin_block_epoch = cur_block
@@ -174,19 +218,68 @@ class EpochGenerator:
                     await asyncio.sleep(settings.chain.epoch.block_time)
                 else:
                     end_block_epoch = cur_block - settings.chain.epoch.head_offset
+                    
+                    # Calculate block gap
+                    block_gap = end_block_epoch - begin_block_epoch + 1
+                    
+                    # Gap detection with threshold-based catch-up
+                    if block_gap >= self.GAP_THRESHOLD:
+                        # Large gap detected - skip catch-up to prevent overwhelming snapshotter nodes
+                        # Start fresh from near current head to avoid compute overload
+                        # For height=1, we want to start from current_head - head_offset - offset
+                        # This ensures end_block_epoch >= begin_block_epoch
+                        new_begin = cur_block - settings.chain.epoch.head_offset - self.GAP_OFFSET
+                        self._logger.warning(
+                            'Large block gap detected: {} blocks (>= threshold {}). '
+                            'Skipping catch-up to prevent snapshotter overload. '
+                            'Starting fresh from block {} (current head: {}, offset: {})',
+                            block_gap, self.GAP_THRESHOLD, new_begin, cur_block, self.GAP_OFFSET
+                        )
+                        begin_block_epoch = new_begin
+                        end_block_epoch = cur_block - settings.chain.epoch.head_offset
+                        # Reset polling interval for fresh start
+                        self.current_polling_interval = 1.0
+                        # Recalculate block_gap after reset
+                        block_gap = end_block_epoch - begin_block_epoch + 1
+                    
+                    # Check if we have enough blocks for an epoch
                     if not (end_block_epoch - begin_block_epoch + 1) >= settings.chain.epoch.height:
-                        # Special handling for epoch height of 1 - use simple polling
+                        # Special handling for epoch height of 1 - process immediately when available
                         if settings.chain.epoch.height == 1:
-                            polling_interval = getattr(
-                                settings.chain, 'polling_interval', settings.chain.epoch.block_time // 2,
-                            )
-                            self._logger.debug(
-                                'Current head of source chain estimated at block {} after offsetting | '
-                                '{} - {} does not satisfy configured epoch length (height=1). '
-                                'Using simple polling method, sleeping for {} seconds...',
-                                end_block_epoch, begin_block_epoch, end_block_epoch, polling_interval,
-                            )
-                            await asyncio.sleep(polling_interval)
+                            # For height=1, if current_block > begin_block_epoch, we can process immediately
+                            if cur_block > begin_block_epoch:
+                                # Process immediately - don't wait
+                                end_block_epoch = cur_block - settings.chain.epoch.head_offset
+                                # Ensure we have at least 1 block
+                                if end_block_epoch >= begin_block_epoch:
+                                    # Will process below, skip sleep
+                                    pass
+                                else:
+                                    # Adjust polling interval based on gap
+                                    if block_gap < 5:
+                                        # Small gap - use faster polling
+                                        polling_interval = self.MIN_POLLING_INTERVAL
+                                    else:
+                                        # Larger gap but below threshold - use adaptive interval
+                                        polling_interval = self.current_polling_interval
+                                    
+                                    self._logger.debug(
+                                        'Current head {} after offsetting | '
+                                        'Begin block {} - End block {} does not satisfy epoch length (height=1). '
+                                        'Using adaptive polling, sleeping for {:.2f} seconds...',
+                                        end_block_epoch, begin_block_epoch, end_block_epoch, polling_interval
+                                    )
+                                    await asyncio.sleep(polling_interval)
+                                    continue
+                            else:
+                                # No new blocks yet - use adaptive polling interval
+                                polling_interval = self.current_polling_interval
+                                self._logger.debug(
+                                    'No new blocks available. Using adaptive polling, sleeping for {:.2f} seconds...',
+                                    polling_interval
+                                )
+                                await asyncio.sleep(polling_interval)
+                                continue
                         else:
                             # Original logic for epoch height > 1
                             sleep_factor = settings.chain.epoch.height - \
@@ -207,6 +300,8 @@ class EpochGenerator:
                         'Chunking blocks between {} - {} with chunk size: {}', begin_block_epoch,
                         end_block_epoch, settings.chain.epoch.height,
                     )
+                    
+                    epochs_processed = 0
                     for epoch in chunks(begin_block_epoch, end_block_epoch, settings.chain.epoch.height):
                         if epoch[1] - epoch[0] + 1 < settings.chain.epoch.height:
                             self._logger.debug(
@@ -343,6 +438,7 @@ class EpochGenerator:
                             if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
                                 self._new_nonce += 1
 
+                            epochs_processed += 1
                             self._logger.debug(
                                 'Epoch Released! Transaction hash: {}', tx_hash,
                             )
@@ -385,6 +481,26 @@ class EpochGenerator:
                         await asyncio.sleep(sleep_secs_between_chunks)
                     else:
                         begin_block_epoch = end_block_epoch + 1
+                        
+                        # Performance tracking and adaptive polling adjustment
+                        processing_time = time.time() - processing_start_time
+                        if epochs_processed > 0:
+                            await self._adaptive_polling_adjustment(epochs_processed, processing_time)
+                        
+                        # Adjust polling interval based on remaining gap
+                        remaining_gap = cur_block - begin_block_epoch
+                        if remaining_gap < 5:
+                            # Small gap - use faster polling to catch up quickly
+                            self.current_polling_interval = max(
+                                self.current_polling_interval * 0.9,
+                                self.MIN_POLLING_INTERVAL
+                            )
+                        elif remaining_gap == 0:
+                            # Caught up - use slower polling to reduce RPC calls
+                            self.current_polling_interval = min(
+                                self.current_polling_interval * 1.1,
+                                self.MAX_POLLING_INTERVAL
+                            )
 
 
 def main():
