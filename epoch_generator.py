@@ -381,8 +381,8 @@ class EpochGenerator:
                     
                     epochs_processed = 0
                     # use_force_skip is set above when gap >= threshold
-                    # Track if we're catching up (gap >= threshold) to skip sleep between epochs
-                    catching_up = gap_from_head >= self.GAP_THRESHOLD
+                    # Track if we're catching up (any gap > 0 means we're behind and should process faster
+                    catching_up = gap_from_head > 0
                     for epoch in chunks(begin_block_epoch, end_block_epoch, settings.chain.epoch.height):
                         if epoch[1] - epoch[0] + 1 < settings.chain.epoch.height:
                             self._logger.debug(
@@ -652,23 +652,24 @@ class EpochGenerator:
                             self._force_tx = True
                             break
 
-                        # Skip sleep when catching up (gap >= threshold) to catch up faster
-                        # Only sleep when we're caught up or close to caught up
-                        # Recalculate gap to see if we're still catching up (cur_block stays same, begin_block_epoch changes)
+                        # Skip sleep when catching up (any gap > 0) to catch up faster
+                        # Only sleep when we're caught up (gap == 0)
+                        # Recalculate gap to see if we're still catching up (cur_block stays same, epoch[1] is last processed)
                         current_gap = cur_block - epoch[1]  # Gap from chain head to last processed epoch
-                        if catching_up and current_gap >= self.GAP_THRESHOLD:
-                            # When catching up, use minimal sleep (0.1s) to process epochs as fast as possible
+                        if current_gap > 0:
+                            # When catching up (any gap > 0), use minimal sleep (0.1s) to process epochs as fast as possible
                             # This allows us to catch up quickly without overwhelming the chain
                             self._logger.debug(
-                                'Catching up (gap: {} blocks). Using minimal sleep to process epochs faster.',
+                                'Catching up (gap: {} blocks). Using minimal sleep (0.1s) to process epochs faster.',
                                 current_gap
                             )
                             await asyncio.sleep(0.1)  # Minimal sleep to allow async operations
                         else:
+                            # Only sleep when caught up (gap == 0)
                             self._logger.debug(
-                                'Waiting to push next epoch in {} seconds...', sleep_secs_between_chunks,
+                                'Caught up (gap: {} blocks). Waiting to push next epoch in {} seconds...',
+                                current_gap, sleep_secs_between_chunks
                             )
-                            # fixed wait when caught up
                             await asyncio.sleep(sleep_secs_between_chunks)
                     else:
                         begin_block_epoch = end_block_epoch + 1
