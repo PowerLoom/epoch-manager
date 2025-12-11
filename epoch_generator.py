@@ -220,15 +220,25 @@ class EpochGenerator:
                 else:
                     end_block_epoch = cur_block - settings.chain.epoch.head_offset
                     
-                    # Calculate block gap
+                    # Calculate block gap: distance from current chain head to begin_block_epoch
+                    # This detects if we're falling behind the chain head
+                    gap_from_head = cur_block - begin_block_epoch  # Gap from actual chain head
                     block_gap = end_block_epoch - begin_block_epoch + 1
+                    
+                    # Log gap status for debugging (log if gap >= 5 blocks)
+                    if gap_from_head >= 5:
+                        self._logger.warning(
+                            'Gap detected: {} blocks behind chain head (current: {}, begin_block: {}, end_block: {})',
+                            gap_from_head, cur_block, begin_block_epoch, end_block_epoch
+                        )
                     
                     # Gap detection with threshold-based catch-up
                     # Track whether to use forceSkipEpoch (for large gaps) - controlled by settings flag
                     use_force_skip = False
                     force_skip_enabled = getattr(settings.chain, 'force_skip_epoch', False)
                     
-                    if block_gap >= self.GAP_THRESHOLD and force_skip_enabled:
+                    # Use gap_from_head for detection (more accurate than block_gap which includes offset)
+                    if gap_from_head >= self.GAP_THRESHOLD and force_skip_enabled:
                         # Large gap detected - use forceSkipEpoch to skip to current head
                         # forceSkipEpoch allows non-sequential epoch release (requires owner permission)
                         # This prevents overwhelming snapshotter nodes with massive catch-up
@@ -251,10 +261,10 @@ class EpochGenerator:
                                 
                                 use_force_skip = True
                                 self._logger.warning(
-                                    'Large block gap detected: {} blocks (>= threshold {}). '
+                                    'Large block gap detected: {} blocks from chain head (>= threshold {}). '
                                     'force_skip_epoch enabled. Will use forceSkipEpoch to skip from epoch end {} to block {} - {} '
                                     'to prevent snapshotter overload.',
-                                    block_gap, self.GAP_THRESHOLD, contract_epoch_end, begin_block_epoch, end_block_epoch
+                                    gap_from_head, self.GAP_THRESHOLD, contract_epoch_end, begin_block_epoch, end_block_epoch
                                 )
                             else:
                                 # No epoch on contract yet - use forceSkipEpoch to start from near current head
@@ -262,9 +272,9 @@ class EpochGenerator:
                                 end_block_epoch = cur_block - settings.chain.epoch.head_offset
                                 use_force_skip = True
                                 self._logger.warning(
-                                    'Large block gap detected: {} blocks (>= threshold {}). '
+                                    'Large block gap detected: {} blocks from chain head (>= threshold {}). '
                                     'force_skip_epoch enabled. No epoch on contract. Will use forceSkipEpoch to start from block {} - {}',
-                                    block_gap, self.GAP_THRESHOLD, begin_block_epoch, end_block_epoch
+                                    gap_from_head, self.GAP_THRESHOLD, begin_block_epoch, end_block_epoch
                                 )
                         except Exception as ex:
                             self._logger.error(
@@ -278,9 +288,10 @@ class EpochGenerator:
                         
                         # Reset polling interval for fresh start
                         self.current_polling_interval = 1.0
-                        # Recalculate block_gap after reset
+                        # Recalculate gaps after reset
                         block_gap = end_block_epoch - begin_block_epoch + 1
-                    elif block_gap >= self.GAP_THRESHOLD and not force_skip_enabled:
+                        gap_from_head = cur_block - begin_block_epoch
+                    elif gap_from_head >= self.GAP_THRESHOLD and not force_skip_enabled:
                         # Large gap detected but force_skip_epoch is disabled
                         # Sync begin_block_epoch with on-chain state for sequential release
                         # _fetch_epoch_from_contract() already returns currentEpoch.end + 1
@@ -290,10 +301,10 @@ class EpochGenerator:
                                 # next_epoch_to_release is already currentEpoch.end + 1
                                 if begin_block_epoch < next_epoch_to_release:
                                     self._logger.warning(
-                                        'Large block gap detected: {} blocks (>= threshold {}). '
+                                        'Large block gap detected: {} blocks from chain head (>= threshold {}). '
                                         'force_skip_epoch disabled. Syncing with on-chain epoch. '
                                         'Will release sequentially from block {} to prevent snapshotter overload.',
-                                        block_gap, self.GAP_THRESHOLD, next_epoch_to_release
+                                        gap_from_head, self.GAP_THRESHOLD, next_epoch_to_release
                                     )
                                     begin_block_epoch = next_epoch_to_release
                         except Exception as ex:
@@ -305,8 +316,9 @@ class EpochGenerator:
                         end_block_epoch = cur_block - settings.chain.epoch.head_offset
                         # Reset polling interval for fresh start
                         self.current_polling_interval = 1.0
-                        # Recalculate block_gap after reset
+                        # Recalculate gaps after reset
                         block_gap = end_block_epoch - begin_block_epoch + 1
+                        gap_from_head = cur_block - begin_block_epoch
                     
                     # Check if we have enough blocks for an epoch
                     if not (end_block_epoch - begin_block_epoch + 1) >= settings.chain.epoch.height:
@@ -369,6 +381,8 @@ class EpochGenerator:
                     
                     epochs_processed = 0
                     # use_force_skip is set above when gap >= threshold
+                    # Track if we're catching up (gap >= threshold) to skip sleep between epochs
+                    catching_up = gap_from_head >= self.GAP_THRESHOLD
                     for epoch in chunks(begin_block_epoch, end_block_epoch, settings.chain.epoch.height):
                         if epoch[1] - epoch[0] + 1 < settings.chain.epoch.height:
                             self._logger.debug(
@@ -638,11 +652,24 @@ class EpochGenerator:
                             self._force_tx = True
                             break
 
-                        self._logger.debug(
-                            'Waiting to push next epoch in {} seconds...', sleep_secs_between_chunks,
-                        )
-                        # fixed wait
-                        await asyncio.sleep(sleep_secs_between_chunks)
+                        # Skip sleep when catching up (gap >= threshold) to catch up faster
+                        # Only sleep when we're caught up or close to caught up
+                        # Recalculate gap to see if we're still catching up (cur_block stays same, begin_block_epoch changes)
+                        current_gap = cur_block - epoch[1]  # Gap from chain head to last processed epoch
+                        if catching_up and current_gap >= self.GAP_THRESHOLD:
+                            # When catching up, use minimal sleep (0.1s) to process epochs as fast as possible
+                            # This allows us to catch up quickly without overwhelming the chain
+                            self._logger.debug(
+                                'Catching up (gap: {} blocks). Using minimal sleep to process epochs faster.',
+                                current_gap
+                            )
+                            await asyncio.sleep(0.1)  # Minimal sleep to allow async operations
+                        else:
+                            self._logger.debug(
+                                'Waiting to push next epoch in {} seconds...', sleep_secs_between_chunks,
+                            )
+                            # fixed wait when caught up
+                            await asyncio.sleep(sleep_secs_between_chunks)
                     else:
                         begin_block_epoch = end_block_epoch + 1
                         
