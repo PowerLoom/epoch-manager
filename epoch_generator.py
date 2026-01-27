@@ -1,7 +1,6 @@
 import asyncio
 import json
 import resource
-import resource
 import time
 from multiprocessing import Process
 from signal import SIGINT
@@ -19,11 +18,6 @@ from tenacity import retry_if_exception_type
 from tenacity import stop_after_attempt
 from tenacity import wait_random_exponential
 from web3 import AsyncHTTPProvider
-from tenacity import retry
-from tenacity import retry_if_exception_type
-from tenacity import stop_after_attempt
-from tenacity import wait_random_exponential
-from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 from web3 import Web3
 
@@ -33,7 +27,6 @@ from helpers.message_models import RPCNodesObject
 from helpers.rpc_helper import ConstructRPC
 from settings.conf import settings
 from utils.default_logger import logger
-from utils.helpers import chunks
 from utils.helpers import chunks
 from utils.notification_utils import send_failure_notifications
 from utils.transaction_utils import write_transaction
