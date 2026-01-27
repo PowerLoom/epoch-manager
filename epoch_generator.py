@@ -1,6 +1,7 @@
 import asyncio
 import json
 import resource
+import resource
 import time
 from multiprocessing import Process
 from signal import SIGINT
@@ -18,6 +19,11 @@ from tenacity import retry_if_exception_type
 from tenacity import stop_after_attempt
 from tenacity import wait_random_exponential
 from web3 import AsyncHTTPProvider
+from tenacity import retry
+from tenacity import retry_if_exception_type
+from tenacity import stop_after_attempt
+from tenacity import wait_random_exponential
+from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 from web3 import Web3
 
@@ -27,6 +33,7 @@ from helpers.message_models import RPCNodesObject
 from helpers.rpc_helper import ConstructRPC
 from settings.conf import settings
 from utils.default_logger import logger
+from utils.helpers import chunks
 from utils.helpers import chunks
 from utils.notification_utils import send_failure_notifications
 from utils.transaction_utils import write_transaction
@@ -174,6 +181,18 @@ class EpochGenerator:
             RETRY_LIMIT=settings.chain.rpc.retry,
         )
         self._logger.debug('Starting {}', Process.name)
+
+        if settings.epoch_release_start_timestamp and not begin_block_epoch:
+            begin_block_epoch = await self._wait_and_release_first_epoch(
+                rpc_obj=rpc_obj,
+                rpc_nodes_obj=rpc_nodes_obj,
+            )
+            if not begin_block_epoch:
+                self._logger.error(
+                    'Unable to release first epoch on time. Exiting...',
+                )
+                return
+
         while True:
             try:
                 cur_block = rpc_obj.rpc_eth_blocknumber(
