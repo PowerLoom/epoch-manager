@@ -33,8 +33,6 @@ from utils.transaction_utils import write_transaction
 from utils.transaction_utils import write_transaction_with_receipt
 protocol_state_contract_address = settings.protocol_state_address
 data_market_address = settings.data_market_address
-new_protocol_state_contract_address = settings.new_protocol_state_address
-new_data_market_address = settings.new_data_market_address
 
 # load abi from json file and create contract object
 with open('utils/static/abi.json', 'r') as f:
@@ -45,10 +43,6 @@ protocol_state_contract = w3.eth.contract(
     address=protocol_state_contract_address, abi=abi,
 )
 
-new_protocol_state_contract = w3.eth.contract(
-    address=new_protocol_state_contract_address, abi=abi,
-) if new_protocol_state_contract_address else None
-
 
 class EpochGenerator:
 
@@ -57,7 +51,6 @@ class EpochGenerator:
         self._shutdown_initiated = False
         self._end = None
         self._nonce = -1
-        self._new_nonce = -1
         self._async_transport = None
         self._client = None
         self.release_counter = 0
@@ -79,10 +72,6 @@ class EpochGenerator:
         self._nonce = await w3.eth.get_transaction_count(
             settings.validator_epoch_address,
         )
-        if settings.new_validator_epoch_address:
-            self._new_nonce = await w3.eth.get_transaction_count(
-                settings.new_validator_epoch_address,
-            )
         await self._init_httpx_client()
 
     async def _init_httpx_client(self):
@@ -145,12 +134,7 @@ class EpochGenerator:
         stop=stop_after_attempt(settings.anchor_chain.rpc.retry),
     )
     async def _fetch_epoch_from_contract(self) -> int:
-        """Fetch the next epoch to release from the legacy contract only.
-        
-        Note: New contract releases are a stopgap feature and should not affect
-        the epoch release logic. We only use the legacy contract to determine
-        what epoch to release next.
-        """
+        """Fetch the next epoch to release from the contract."""
         last_epoch_data = await protocol_state_contract.functions.currentEpoch(Web3.to_checksum_address(data_market_address)).call()
         if last_epoch_data[1]:
             self._logger.debug(
@@ -400,48 +384,27 @@ class EpochGenerator:
                         try:
                             function_name = 'forceSkipEpoch' if use_force_skip else 'releaseEpoch'
                             
-                            # Fetch each contract's current epoch independently and determine what each needs
-                            legacy_epoch_data = await protocol_state_contract.functions.currentEpoch(
+                            # Fetch current epoch from contract to determine what to release
+                            epoch_data = await protocol_state_contract.functions.currentEpoch(
                                 Web3.to_checksum_address(data_market_address)
                             ).call()
-                            legacy_epoch_end = legacy_epoch_data[1] if legacy_epoch_data[1] else None
-                            legacy_next_epoch = legacy_epoch_end + 1 if legacy_epoch_end is not None else None
+                            epoch_end = epoch_data[1] if epoch_data[1] else None
+                            next_epoch = epoch_end + 1 if epoch_end is not None else None
                             
-                            new_epoch_end = None
-                            new_next_epoch = None
-                            if new_protocol_state_contract and new_data_market_address:
-                                new_epoch_data = await new_protocol_state_contract.functions.currentEpoch(
-                                    Web3.to_checksum_address(new_data_market_address)
-                                ).call()
-                                new_epoch_end = new_epoch_data[1] if new_epoch_data[1] else None
-                                new_next_epoch = new_epoch_end + 1 if new_epoch_end is not None else None
-                            
-                            # Both contracts must release the same epoch to stay in sync
-                            # Use the minimum next epoch from both contracts to ensure they stay aligned
-                            min_next_epoch = None
-                            if legacy_next_epoch is not None:
-                                min_next_epoch = legacy_next_epoch
-                            if new_next_epoch is not None:
-                                if min_next_epoch is None or new_next_epoch < min_next_epoch:
-                                    min_next_epoch = new_next_epoch
-                            
-                            # If we have a minimum next epoch and it differs from epoch_block, use it for both
-                            if min_next_epoch is not None and epoch_block['begin'] != min_next_epoch:
+                            # If we have a next epoch and it differs from epoch_block, sync to it
+                            if next_epoch is not None and epoch_block['begin'] != next_epoch:
                                 self._logger.info(
-                                    'Syncing both contracts to epoch {} (Legacy next: {}, New next: {}, calculated: {})',
-                                    min_next_epoch, legacy_next_epoch, new_next_epoch, epoch_block['begin']
+                                    'Syncing to epoch {} (contract next: {}, calculated: {})',
+                                    next_epoch, next_epoch, epoch_block['begin']
                                 )
-                                sync_epoch = {'begin': min_next_epoch, 'end': min_next_epoch}
-                                legacy_release_epoch = sync_epoch.copy()
-                                new_release_epoch = sync_epoch.copy()
+                                release_epoch = {'begin': next_epoch, 'end': next_epoch}
                             else:
-                                # Both contracts are in sync, use calculated epoch_block
-                                legacy_release_epoch = epoch_block.copy()
-                                new_release_epoch = epoch_block.copy()
+                                # Contract is in sync, use calculated epoch_block
+                                release_epoch = epoch_block.copy()
                             
                             self._logger.info(
-                                'Attempting to {} epoch - Legacy: {}, New: {}',
-                                function_name, legacy_release_epoch, new_release_epoch if new_protocol_state_contract else 'N/A'
+                                'Attempting to {} epoch - {}',
+                                function_name, release_epoch
                             )
                             
                             # Always check receipts for reliability - ensures we detect failures immediately
@@ -449,8 +412,8 @@ class EpochGenerator:
                             # silent failures and nonce drift issues.
                             self.release_counter += 1
                             
-                            # Release to both contracts concurrently
-                            legacy_task = write_transaction_with_receipt(
+                            # Release epoch to contract
+                            tx_hash, receipt = await write_transaction_with_receipt(
                                 w3,
                                 settings.validator_epoch_address,
                                 settings.validator_epoch_private_key,
@@ -461,72 +424,24 @@ class EpochGenerator:
                                 Web3.to_checksum_address(
                                     data_market_address,
                                 ),
-                                legacy_release_epoch['begin'],
-                                legacy_release_epoch['end'],
+                                release_epoch['begin'],
+                                release_epoch['end'],
                             )
-                            
-                            tasks = [legacy_task]
-                            if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
-                                new_task = write_transaction_with_receipt(
-                                    w3,
-                                    settings.new_validator_epoch_address,
-                                    settings.new_validator_epoch_private_key,
-                                    new_protocol_state_contract,
-                                    function_name,
-                                    self._new_nonce,
-                                    self.gas if not self._force_tx else self.high_gas,
-                                    Web3.to_checksum_address(
-                                        new_data_market_address,
-                                    ),
-                                    new_release_epoch['begin'],
-                                    new_release_epoch['end'],
-                                )
-                                tasks.append(new_task)
-                            
-                            # Execute both releases concurrently
-                            results = await asyncio.gather(*tasks, return_exceptions=True)
-                            tx_hash, receipt = results[0] if not isinstance(results[0], Exception) else (None, None)
-                            
-                            new_tx_hash = None
-                            new_receipt = None
-                            if len(results) > 1 and not isinstance(results[1], Exception):
-                                new_tx_hash, new_receipt = results[1]
-                            elif len(results) > 1 and isinstance(results[1], Exception):
-                                self._logger.error(
-                                    'Error releasing to new contract: {}', results[1]
-                                )
 
-                            # Check both transaction receipts
+                            # Check transaction receipt
                             if receipt['status'] != 1:
                                 # E22 (epoch already exists) can happen due to redundant submissions
                                 # from multiple epoch managers or duplicate transactions - just sync and continue
                                 if not use_force_skip:
                                     self._logger.warning(
-                                        'Legacy contract transaction failed (may be E22 - epoch already exists). '
+                                        'Transaction failed (may be E22 - epoch already exists). '
                                         'Syncing and continuing.',
                                         epoch_block['begin']
                                     )
                                     # Sync and continue - don't treat as fatal error
-                                    legacy_epoch = await self._fetch_epoch_from_contract()
-                                    new_epoch = None
-                                    if new_protocol_state_contract and new_data_market_address:
-                                        try:
-                                            new_epoch_data = await new_protocol_state_contract.functions.currentEpoch(
-                                                Web3.to_checksum_address(new_data_market_address)
-                                            ).call()
-                                            new_epoch = new_epoch_data[1] + 1 if new_epoch_data[1] else None
-                                        except Exception:
-                                            pass
-                                    min_epoch = None
-                                    if legacy_epoch != -1:
-                                        min_epoch = legacy_epoch
-                                    if new_epoch is not None:
-                                        if min_epoch is None or new_epoch < min_epoch:
-                                            min_epoch = new_epoch
-                                    if min_epoch is not None:
-                                        begin_block_epoch = min_epoch
-                                    elif legacy_epoch != -1:
-                                        begin_block_epoch = legacy_epoch
+                                    next_epoch = await self._fetch_epoch_from_contract()
+                                    if next_epoch != -1:
+                                        begin_block_epoch = next_epoch
                                     # Continue to next iteration
                                     continue
                                 
@@ -575,8 +490,6 @@ class EpochGenerator:
                                                     )
                                                     # Update nonce and continue
                                                     self._nonce += 1
-                                                    if settings.new_validator_epoch_address:
-                                                        self._new_nonce += 1
                                                     epochs_processed += 1
                                                     self._force_tx = False
                                                     # Skip the error handling below since we succeeded
@@ -593,7 +506,7 @@ class EpochGenerator:
                                 
                                 if receipt['status'] != 1:
                                     self._logger.error(
-                                        'Unable to release epoch (old contract), txn failed! Got receipt: {}', receipt,
+                                        'Unable to release epoch, txn failed! Got receipt: {}', receipt,
                                     )
                                     issue = GenericTxnIssue(
                                         accountAddress=settings.validator_epoch_address,
@@ -601,67 +514,13 @@ class EpochGenerator:
                                         issueType='EpochReleaseTxnFailed',
                                         extra=Web3.to_json(receipt),
                                     )
-                            elif new_protocol_state_contract and new_data_market_address and new_receipt['status'] != 1:
-                                # E22 (epoch already exists) can happen due to redundant submissions
-                                # from multiple epoch managers or duplicate transactions - just sync and continue
-                                if not use_force_skip:
-                                    self._logger.warning(
-                                        'New contract transaction failed (may be E22 - epoch already exists). '
-                                        'Syncing and continuing.',
-                                        epoch_block['begin']
-                                    )
-                                    # If legacy succeeded, increment its nonce
-                                    if receipt and receipt.get('status') == 1:
-                                        self._nonce += 1
-                                        self._logger.info(
-                                            '✅ Epoch Released to Legacy Contract! TX: {}',
-                                            tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash
-                                        )
-                                    # Sync and continue - don't treat as fatal error
-                                    legacy_epoch = await self._fetch_epoch_from_contract()
-                                    new_epoch = None
-                                    if new_protocol_state_contract and new_data_market_address:
-                                        try:
-                                            new_epoch_data = await new_protocol_state_contract.functions.currentEpoch(
-                                                Web3.to_checksum_address(new_data_market_address)
-                                            ).call()
-                                            new_epoch = new_epoch_data[1] + 1 if new_epoch_data[1] else None
-                                        except Exception:
-                                            pass
-                                    min_epoch = None
-                                    if legacy_epoch != -1:
-                                        min_epoch = legacy_epoch
-                                    if new_epoch is not None:
-                                        if min_epoch is None or new_epoch < min_epoch:
-                                            min_epoch = new_epoch
-                                    if min_epoch is not None:
-                                        begin_block_epoch = min_epoch
-                                    elif legacy_epoch != -1:
-                                        begin_block_epoch = legacy_epoch
-                                    # Continue to next iteration
-                                    continue
-                                
-                                self._logger.error(
-                                    'Unable to release epoch (new contract), txn failed! Got receipt: {}', new_receipt,
-                                )
-                                issue = GenericTxnIssue(
-                                    accountAddress=settings.validator_epoch_address,
-                                    epochBegin=epoch_block['begin'],
-                                    issueType='EpochReleaseTxnFailed',
-                                    extra=Web3.to_json(new_receipt),
-                                )
                             else:
                                 issue = None
-                                # Log successful releases
+                                # Log successful release
                                 if receipt and receipt.get('status') == 1:
                                     self._logger.info(
-                                        '✅ Epoch Released to Legacy Contract! TX: {}',
+                                        '✅ Epoch Released! TX: {}',
                                         tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash
-                                    )
-                                if new_receipt and new_receipt.get('status') == 1:
-                                    self._logger.info(
-                                        '✅ Epoch Released to New Contract! TX: {}',
-                                        new_tx_hash.hex() if hasattr(new_tx_hash, 'hex') else new_tx_hash
                                     )
 
                             if issue:
@@ -673,47 +532,21 @@ class EpochGenerator:
                                 self._nonce = await w3.eth.get_transaction_count(
                                     settings.validator_epoch_address,
                                 )
-                                if settings.new_validator_epoch_address:
-                                    self._new_nonce = await w3.eth.get_transaction_count(
-                                        settings.new_validator_epoch_address,
-                                    )
 
-                                # Sync with BOTH contracts - use minimum epoch to keep them aligned
-                                legacy_epoch = await self._fetch_epoch_from_contract()
-                                new_epoch = None
-                                if new_protocol_state_contract and new_data_market_address:
-                                    try:
-                                        new_epoch_data = await new_protocol_state_contract.functions.currentEpoch(
-                                            Web3.to_checksum_address(new_data_market_address)
-                                        ).call()
-                                        new_epoch = new_epoch_data[1] + 1 if new_epoch_data[1] else None
-                                    except Exception as ex:
-                                        self._logger.error('Error fetching new contract epoch: {}', ex)
-                                
-                                # Use minimum epoch from both contracts to prevent drift
-                                min_epoch = None
-                                if legacy_epoch != -1:
-                                    min_epoch = legacy_epoch
-                                if new_epoch is not None:
-                                    if min_epoch is None or new_epoch < min_epoch:
-                                        min_epoch = new_epoch
-                                
-                                if min_epoch is not None:
+                                # Sync with contract
+                                next_epoch = await self._fetch_epoch_from_contract()
+                                if next_epoch != -1:
                                     self._logger.info(
-                                        'Syncing begin_block_epoch to minimum epoch from both contracts: {} -> {} (Legacy: {}, New: {})',
-                                        begin_block_epoch, min_epoch, legacy_epoch, new_epoch
+                                        'Syncing begin_block_epoch to contract epoch: {} -> {}',
+                                        begin_block_epoch, next_epoch
                                     )
-                                    begin_block_epoch = min_epoch
-                                elif legacy_epoch != -1:
-                                    begin_block_epoch = legacy_epoch
+                                    begin_block_epoch = next_epoch
                                 self._force_tx = True
                                 break
                             else:
                                 self._force_tx = False
-                                # Success - increment nonces and continue
+                                # Success - increment nonce and continue
                                 self._nonce += 1
-                                if new_protocol_state_contract and new_data_market_address and settings.new_validator_epoch_address and settings.new_validator_epoch_private_key:
-                                    self._new_nonce += 1
                                 epochs_processed += 1
                         except Exception as ex:
                             self._logger.error(
@@ -735,40 +568,15 @@ class EpochGenerator:
                             self._nonce = await w3.eth.get_transaction_count(
                                 settings.validator_epoch_address,
                             )
-                            if settings.new_validator_epoch_address:
-                                self._new_nonce = await w3.eth.get_transaction_count(
-                                    settings.new_validator_epoch_address,
-                                )
 
                             # Fetch epoch again to sync with contract state
-                            # Use the minimum epoch from both contracts to ensure they stay aligned
-                            legacy_epoch = await self._fetch_epoch_from_contract()
-                            new_epoch = None
-                            if new_protocol_state_contract and new_data_market_address:
-                                try:
-                                    new_epoch_data = await new_protocol_state_contract.functions.currentEpoch(
-                                        Web3.to_checksum_address(new_data_market_address)
-                                    ).call()
-                                    new_epoch = new_epoch_data[1] + 1 if new_epoch_data[1] else None
-                                except Exception as ex:
-                                    self._logger.error('Error fetching new contract epoch: {}', ex)
-                            
-                            # Use minimum epoch from both contracts to prevent drift
-                            min_epoch = None
-                            if legacy_epoch != -1:
-                                min_epoch = legacy_epoch
-                            if new_epoch is not None:
-                                if min_epoch is None or new_epoch < min_epoch:
-                                    min_epoch = new_epoch
-                            
-                            if min_epoch is not None:
+                            next_epoch = await self._fetch_epoch_from_contract()
+                            if next_epoch != -1:
                                 self._logger.info(
-                                    'Syncing begin_block_epoch to minimum epoch from both contracts after error: {} -> {} (Legacy: {}, New: {})',
-                                    begin_block_epoch, min_epoch, legacy_epoch, new_epoch
+                                    'Syncing begin_block_epoch to contract epoch after error: {} -> {}',
+                                    begin_block_epoch, next_epoch
                                 )
-                                begin_block_epoch = min_epoch
-                            elif legacy_epoch != -1:
-                                begin_block_epoch = legacy_epoch
+                                begin_block_epoch = next_epoch
 
                             self._force_tx = True
                             break

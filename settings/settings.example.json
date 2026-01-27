@@ -60,12 +60,8 @@
 	},
 	"protocol_state_address": "0x000000",
 	"data_market_address": "0x000000",
-	"new_protocol_state_address": "0x...",
-	"new_data_market_address": "0x...",
 	"validator_epoch_address": "0x000000",
 	"validator_epoch_private_key": "0x000000",
-	"new_validator_epoch_address": "0x...",
-	"new_validator_epoch_private_key": "0x...",
 	"force_consensus_address": "0x000000",
 	"force_consensus_private_key": "0x000000",
 	"ticker_begin_block": 0
