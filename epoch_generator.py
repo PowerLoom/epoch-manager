@@ -9,6 +9,7 @@ from signal import SIGQUIT
 from signal import SIGTERM
 
 import uvloop
+from aiohttp import ClientTimeout as AiohttpClientTimeout
 from httpx import AsyncClient
 from httpx import AsyncHTTPTransport
 from httpx import Limits
@@ -38,7 +39,12 @@ data_market_address = settings.data_market_address
 with open('utils/static/abi.json', 'r') as f:
     abi = json.load(f)
 
-w3 = AsyncWeb3(AsyncHTTPProvider(settings.anchor_chain.rpc.full_nodes[0].url))
+w3 = AsyncWeb3(
+    AsyncHTTPProvider(
+        settings.anchor_chain.rpc.full_nodes[0].url,
+        request_kwargs={'timeout': AiohttpClientTimeout(total=settings.anchor_chain.rpc.request_time_out)},
+    )
+)
 protocol_state_contract = w3.eth.contract(
     address=protocol_state_contract_address, abi=abi,
 )
@@ -68,7 +74,17 @@ class EpochGenerator:
         self.GAP_THRESHOLD = 10  # blocks - if gap >= this, skip catch-up and start fresh
         self.GAP_OFFSET = 1  # Start from current_head - offset when gap is too large
 
+    @retry(
+        reraise=True,
+        retry=retry_if_exception_type((asyncio.TimeoutError, OSError, ConnectionError)),
+        wait=wait_random_exponential(multiplier=1, max=10),
+        stop=stop_after_attempt(settings.anchor_chain.rpc.retry),
+    )
     async def setup(self):
+        self._logger.debug(
+            'Fetching nonce from anchor RPC: {}',
+            settings.anchor_chain.rpc.full_nodes[0].url,
+        )
         self._nonce = await w3.eth.get_transaction_count(
             settings.validator_epoch_address,
         )
