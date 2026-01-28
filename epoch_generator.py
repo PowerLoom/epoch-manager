@@ -57,6 +57,7 @@ class EpochGenerator:
         self._shutdown_initiated = False
         self._end = None
         self._nonce = -1
+        self._force_skip_nonce = -1  # only for forceSkipEpoch (force_consensus identity)
         self._async_transport = None
         self._client = None
         self.release_counter = 0
@@ -87,6 +88,9 @@ class EpochGenerator:
         )
         self._nonce = await w3.eth.get_transaction_count(
             settings.validator_epoch_address,
+        )
+        self._force_skip_nonce = await w3.eth.get_transaction_count(
+            settings.force_consensus_address,
         )
         await self._init_httpx_client()
 
@@ -440,14 +444,26 @@ class EpochGenerator:
                             # silent failures and nonce drift issues.
                             self.release_counter += 1
                             
-                            # Release epoch to contract
+                            # forceSkipEpoch uses force_consensus identity (E03 = onlyOwner); releaseEpoch uses validator identity
+                            if function_name == 'forceSkipEpoch':
+                                _address, _key, _nonce = (
+                                    settings.force_consensus_address,
+                                    settings.force_consensus_private_key,
+                                    self._force_skip_nonce,
+                                )
+                            else:
+                                _address, _key, _nonce = (
+                                    settings.validator_epoch_address,
+                                    settings.validator_epoch_private_key,
+                                    self._nonce,
+                                )
                             tx_hash, receipt = await write_transaction_with_receipt(
                                 w3,
-                                settings.validator_epoch_address,
-                                settings.validator_epoch_private_key,
+                                _address,
+                                _key,
                                 protocol_state_contract,
                                 function_name,
-                                self._nonce,
+                                _nonce,
                                 self.gas if not self._force_tx else self.high_gas,
                                 Web3.to_checksum_address(
                                     data_market_address,
@@ -556,9 +572,12 @@ class EpochGenerator:
 
                                 # sleep for 30 seconds to avoid nonce collision
                                 time.sleep(30)
-                                # reset nonce
+                                # reset nonces for both identities
                                 self._nonce = await w3.eth.get_transaction_count(
                                     settings.validator_epoch_address,
+                                )
+                                self._force_skip_nonce = await w3.eth.get_transaction_count(
+                                    settings.force_consensus_address,
                                 )
 
                                 # Sync with contract
@@ -573,8 +592,11 @@ class EpochGenerator:
                                 break
                             else:
                                 self._force_tx = False
-                                # Success - increment nonce and continue
-                                self._nonce += 1
+                                # Success - increment the nonce we used (force_consensus for forceSkipEpoch, validator for releaseEpoch)
+                                if function_name == 'forceSkipEpoch':
+                                    self._force_skip_nonce += 1
+                                else:
+                                    self._nonce += 1
                                 epochs_processed += 1
                         except Exception as ex:
                             self._logger.error(
@@ -592,10 +614,13 @@ class EpochGenerator:
 
                             # sleep for 30 seconds to avoid nonce collision
                             time.sleep(30)
-                            # reset nonce
+                            # reset nonces for both identities
                             self._nonce = await w3.eth.get_transaction_count(
                                 settings.validator_epoch_address,
                             )
+                            self._force_skip_nonce = await w3.eth.get_transaction_count(
+                                settings.force_consensus_address,
+                        )
 
                             # Fetch epoch again to sync with contract state
                             next_epoch = await self._fetch_epoch_from_contract()
