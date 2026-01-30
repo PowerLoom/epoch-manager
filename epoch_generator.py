@@ -248,8 +248,8 @@ class EpochGenerator:
                             gap_from_head, cur_block, begin_block_epoch, end_block_epoch
                         )
                     
-                    # Gap detection with threshold-based catch-up
-                    # Track whether to use forceSkipEpoch (for large gaps) - controlled by settings flag
+                    # Gap detection with threshold-based catch-up (runs every poll)
+                    # Covers: (1) restart with contract far behind chain, (2) mid-run fall-behind (e.g. network/RPC issues)
                     use_force_skip = False
                     force_skip_enabled = getattr(settings.chain, 'force_skip_epoch', False)
                     
@@ -422,7 +422,11 @@ class EpochGenerator:
                             next_epoch = epoch_end + 1 if epoch_end is not None else None
                             
                             # If we have a next epoch and it differs from epoch_block, sync to it
-                            if next_epoch is not None and epoch_block['begin'] != next_epoch:
+                            # Exception: when use_force_skip is True we are intentionally jumping to head;
+                            # do NOT override with contract's next sequential epoch - use the jump target (epoch_block).
+                            if use_force_skip:
+                                release_epoch = epoch_block.copy()
+                            elif next_epoch is not None and epoch_block['begin'] != next_epoch:
                                 self._logger.info(
                                     'Syncing to epoch {} (contract next: {}, calculated: {})',
                                     next_epoch, next_epoch, epoch_block['begin']
