@@ -436,13 +436,17 @@ class EpochGenerator:
                                 # Contract is in sync, use calculated epoch_block
                                 release_epoch = epoch_block.copy()
                             
-                            # Use forceSkipEpoch when chain head is past threshold from what we're about to release (and setting enabled)
-                            gap_to_release = cur_block - release_epoch['end']
-                            function_name = (
-                                'forceSkipEpoch'
-                                if (gap_to_release >= self.GAP_THRESHOLD and force_skip_enabled)
-                                else 'releaseEpoch'
-                            )
+                            # Primary: use_force_skip means we decided at top to jump to head → must use forceSkipEpoch (non-sequential; owner-only).
+                            # Secondary: when not in a jump, use forceSkipEpoch only if gap from head to release target is >= threshold.
+                            if use_force_skip:
+                                function_name = 'forceSkipEpoch'
+                            else:
+                                gap_to_release = cur_block - release_epoch['end']
+                                function_name = (
+                                    'forceSkipEpoch'
+                                    if (gap_to_release >= self.GAP_THRESHOLD and force_skip_enabled)
+                                    else 'releaseEpoch'
+                                )
                             
                             self._logger.info(
                                 'Attempting to {} epoch - {}',
@@ -454,8 +458,10 @@ class EpochGenerator:
                             # silent failures and nonce drift issues.
                             self.release_counter += 1
                             
-                            # forceSkipEpoch uses force_consensus identity (E03 = onlyOwner); releaseEpoch uses validator identity
-                            if function_name == 'forceSkipEpoch':
+                            # Identity: forceSkipEpoch requires DataMarket owner (force_consensus); releaseEpoch requires epochManager (validator).
+                            # Primary: when use_force_skip we are doing a jump → we call forceSkipEpoch → must use owner identity.
+                            # Secondary: when not use_force_skip but function_name is forceSkipEpoch (gap_to_release large), same.
+                            if use_force_skip or function_name == 'forceSkipEpoch':
                                 _address, _key, _nonce = (
                                     settings.force_consensus_address,
                                     settings.force_consensus_private_key,
@@ -492,7 +498,13 @@ class EpochGenerator:
                                         'Syncing and continuing.',
                                         epoch_block['begin']
                                     )
-                                    # Sync and continue - don't treat as fatal error
+                                    # Tx may have been mined; refresh nonces so next attempt does not get "nonce too low"
+                                    self._nonce = await w3.eth.get_transaction_count(
+                                        settings.validator_epoch_address,
+                                    )
+                                    self._force_skip_nonce = await w3.eth.get_transaction_count(
+                                        settings.force_consensus_address,
+                                    )
                                     next_epoch = await self._fetch_epoch_from_contract()
                                     if next_epoch != -1:
                                         begin_block_epoch = next_epoch
