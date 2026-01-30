@@ -414,8 +414,6 @@ class EpochGenerator:
                         )
 
                         try:
-                            function_name = 'forceSkipEpoch' if use_force_skip else 'releaseEpoch'
-                            
                             # Fetch current epoch from contract to determine what to release
                             epoch_data = await protocol_state_contract.functions.currentEpoch(
                                 Web3.to_checksum_address(data_market_address)
@@ -433,6 +431,14 @@ class EpochGenerator:
                             else:
                                 # Contract is in sync, use calculated epoch_block
                                 release_epoch = epoch_block.copy()
+                            
+                            # Use forceSkipEpoch when chain head is past threshold from what we're about to release (and setting enabled)
+                            gap_to_release = cur_block - release_epoch['end']
+                            function_name = (
+                                'forceSkipEpoch'
+                                if (gap_to_release >= self.GAP_THRESHOLD and force_skip_enabled)
+                                else 'releaseEpoch'
+                            )
                             
                             self._logger.info(
                                 'Attempting to {} epoch - {}',
@@ -476,7 +482,7 @@ class EpochGenerator:
                             if receipt['status'] != 1:
                                 # E22 (epoch already exists) can happen due to redundant submissions
                                 # from multiple epoch managers or duplicate transactions - just sync and continue
-                                if not use_force_skip:
+                                if function_name != 'forceSkipEpoch':
                                     self._logger.warning(
                                         'Transaction failed (may be E22 - epoch already exists). '
                                         'Syncing and continuing.',
@@ -490,13 +496,12 @@ class EpochGenerator:
                                     continue
                                 
                                 # Check if forceSkipEpoch failed due to permission issues
-                                if use_force_skip:
+                                if function_name == 'forceSkipEpoch':
                                     self._logger.error(
                                         'forceSkipEpoch failed (likely permission issue - requires owner). '
                                         'Falling back to sequential releaseEpoch. Receipt: {}', receipt,
                                     )
                                     # Fall back to sequential releaseEpoch
-                                    use_force_skip = False
                                     function_name = 'releaseEpoch'
                                     # Sync with on-chain epoch for sequential release
                                     # _fetch_epoch_from_contract() already returns currentEpoch.end + 1
