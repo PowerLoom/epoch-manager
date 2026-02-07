@@ -2,6 +2,7 @@ import asyncio
 import json
 import resource
 import time
+import traceback
 from multiprocessing import Process
 from signal import SIGINT
 from signal import signal
@@ -570,14 +571,21 @@ class EpochGenerator:
                                         )
                                 
                                 if receipt['status'] != 1:
+                                    # Extract transaction hash and error details from receipt
+                                    tx_hash_str = receipt.get('transactionHash', 'Unknown')
+                                    if hasattr(tx_hash_str, 'hex'):
+                                        tx_hash_str = tx_hash_str.hex()
+                                    
+                                    receipt_json = Web3.to_json(receipt)
                                     self._logger.error(
-                                        'Unable to release epoch, txn failed! Got receipt: {}', receipt,
+                                        'Unable to release epoch, txn failed! TX: {}, Receipt: {}',
+                                        tx_hash_str, receipt_json,
                                     )
                                     issue = GenericTxnIssue(
                                         accountAddress=settings.validator_epoch_address,
-                                        epochBegin=epoch_block['begin'],
+                                        epochBegin=str(epoch_block['begin']),
                                         issueType='EpochReleaseTxnFailed',
-                                        extra=Web3.to_json(receipt),
+                                        extra=f"Transaction Hash: {tx_hash_str}\nReceipt: {receipt_json}",
                                     )
                             else:
                                 issue = None
@@ -620,15 +628,19 @@ class EpochGenerator:
                                     self._nonce += 1
                                 epochs_processed += 1
                         except Exception as ex:
-                            self._logger.error(
+                            # Log full exception details with traceback
+                            self._logger.opt(exception=True).error(
                                 'Unable to release epoch, error: {}', ex,
                             )
 
+                            # Format exception details for issue reporting
+                            exception_details = ''.join(traceback.format_exception(type(ex), ex, ex.__traceback__))
+                            
                             issue = GenericTxnIssue(
                                 accountAddress=settings.validator_epoch_address,
-                                epochBegin=epoch_block['begin'],
+                                epochBegin=str(epoch_block['begin']),
                                 issueType='EpochReleaseError',
-                                extra=str(ex),
+                                extra=f"Exception: {str(ex)}\nTraceback:\n{exception_details}",
                             )
 
                             await send_failure_notifications(client=self._client, message=issue)
