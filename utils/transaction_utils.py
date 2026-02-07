@@ -1,6 +1,10 @@
 from settings.conf import settings
 CHAIN_ID = settings.anchor_chain.chain_id
 
+# Default timeout for waiting for transaction receipt (in seconds)
+# This prevents indefinite waiting if transaction is stuck
+DEFAULT_RECEIPT_TIMEOUT = 300  # 5 minutes
+
 
 async def write_transaction(w3, address, private_key, contract, function, nonce, gas, *args):
     """ Writes a transaction to the blockchain
@@ -54,6 +58,12 @@ async def write_transaction_with_receipt(w3, address, private_key, contract, fun
         w3, address, private_key, contract, function, nonce, gas, *args,
     )
 
-    # Wait for confirmation
-    receipt = await w3.eth.wait_for_transaction_receipt(tx_hash)
+    # Wait for confirmation with timeout
+    # timeout parameter controls how long to wait overall for the receipt
+    # Individual RPC calls during polling use the provider's timeout configuration
+    receipt = await w3.eth.wait_for_transaction_receipt(
+        tx_hash,
+        timeout=DEFAULT_RECEIPT_TIMEOUT,
+        poll_latency=2.0,  # Poll every 2 seconds
+    )
     return tx_hash, receipt

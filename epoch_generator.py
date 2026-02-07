@@ -40,10 +40,23 @@ data_market_address = settings.data_market_address
 with open('utils/static/abi.json', 'r') as f:
     abi = json.load(f)
 
+# Configure timeout with granular settings for better control
+# total: total timeout for entire operation
+# connect: timeout for establishing connection
+# sock_read: timeout for reading data from socket
+# sock_connect: timeout for socket connection
+timeout_seconds = settings.anchor_chain.rpc.request_time_out
 w3 = AsyncWeb3(
     AsyncHTTPProvider(
         settings.anchor_chain.rpc.full_nodes[0].url,
-        request_kwargs={'timeout': AiohttpClientTimeout(total=settings.anchor_chain.rpc.request_time_out)},
+        request_kwargs={
+            'timeout': AiohttpClientTimeout(
+                total=timeout_seconds,
+                connect=min(timeout_seconds, 10),  # Connection timeout (max 10s)
+                sock_read=timeout_seconds,  # Socket read timeout
+                sock_connect=min(timeout_seconds, 10),  # Socket connect timeout (max 10s)
+            )
+        },
     )
 )
 protocol_state_contract = w3.eth.contract(
