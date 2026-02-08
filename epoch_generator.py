@@ -476,18 +476,19 @@ class EpochGenerator:
                             # Primary: when use_force_skip we are doing a jump → we call forceSkipEpoch → must use owner identity.
                             # Secondary: when not use_force_skip but function_name is forceSkipEpoch (gap_to_release large), same.
                             if use_force_skip or function_name == 'forceSkipEpoch':
-                                _address, _key, _nonce = (
-                                    settings.force_consensus_address,
-                                    settings.force_consensus_private_key,
-                                    self._force_skip_nonce,
-                                )
+                                _address = settings.force_consensus_address
+                                _key = settings.force_consensus_private_key
+                                # Always fetch nonce from chain right before sending to avoid nonce drift
+                                _nonce = await w3.eth.get_transaction_count(_address)
                             else:
-                                _address, _key, _nonce = (
-                                    settings.validator_epoch_address,
-                                    settings.validator_epoch_private_key,
-                                    self._nonce,
-                                )
-                            tx_hash, receipt = await write_transaction_with_receipt(
+                                _address = settings.validator_epoch_address
+                                _key = settings.validator_epoch_private_key
+                                # Always fetch nonce from chain right before sending to avoid nonce drift
+                                _nonce = await w3.eth.get_transaction_count(_address)
+                            
+                            # Submit transaction (fire-and-forget pattern like relayer)
+                            # Don't block on receipt - epoch release should continue immediately
+                            tx_hash = await write_transaction(
                                 w3,
                                 _address,
                                 _key,
@@ -501,9 +502,45 @@ class EpochGenerator:
                                 release_epoch['begin'],
                                 release_epoch['end'],
                             )
-
-                            # Check transaction receipt
-                            if receipt['status'] != 1:
+                            
+                            self._logger.info(
+                                '✅ Epoch Release Transaction Submitted! TX: {} | Nonce: {}',
+                                tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash,
+                                _nonce
+                            )
+                            
+                            # Wait for receipt in background for nonce management (non-blocking)
+                            # Following relayer pattern: receipt waiting happens separately
+                            # Nonce will be refreshed from chain before next transaction
+                            receipt = None
+                            try:
+                                # Try to get receipt quickly (with short timeout)
+                                # If it's not available yet, that's fine - we'll refresh nonce from chain next time
+                                receipt = await asyncio.wait_for(
+                                    w3.eth.wait_for_transaction_receipt(tx_hash, timeout=10.0),
+                                    timeout=10.0
+                                )
+                                if receipt and receipt.get('status') == 1:
+                                    self._logger.info(
+                                        'Transaction {} confirmed successfully (status=1)',
+                                        tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash
+                                    )
+                                elif receipt and receipt.get('status') == 0:
+                                    self._logger.warning(
+                                        'Transaction {} reverted on-chain (status=0)',
+                                        tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash
+                                    )
+                            except (asyncio.TimeoutError, Exception) as receipt_error:
+                                # Receipt not available yet - that's fine, transaction was submitted
+                                # Nonce will be refreshed from chain before next transaction
+                                self._logger.debug(
+                                    'Receipt not available yet for TX {} (will refresh nonce from chain): {}',
+                                    tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash,
+                                    receipt_error
+                                )
+                            
+                            # Check transaction receipt if we got it
+                            if receipt and receipt.get('status') != 1:
                                 # E22 (epoch already exists) can happen due to redundant submissions
                                 # from multiple epoch managers or duplicate transactions - just sync and continue
                                 if function_name != 'forceSkipEpoch':
@@ -546,14 +583,17 @@ class EpochGenerator:
                                                 )
                                                 epoch_block['begin'] = next_epoch_to_release
                                                 epoch_block['end'] = next_epoch_to_release
-                                                # Retry with releaseEpoch
-                                                tx_hash, receipt = await write_transaction_with_receipt(
+                                                # Retry with releaseEpoch (fire-and-forget)
+                                                retry_nonce = await w3.eth.get_transaction_count(
+                                                    settings.validator_epoch_address,
+                                                )
+                                                retry_tx_hash = await write_transaction(
                                                     w3,
                                                     settings.validator_epoch_address,
                                                     settings.validator_epoch_private_key,
                                                     protocol_state_contract,
                                                     'releaseEpoch',
-                                                    self._nonce,
+                                                    retry_nonce,
                                                     self.gas if not self._force_tx else self.high_gas,
                                                     Web3.to_checksum_address(
                                                         data_market_address,
@@ -561,14 +601,32 @@ class EpochGenerator:
                                                     epoch_block['begin'],
                                                     epoch_block['end'],
                                                 )
-                                                if receipt['status'] == 1:
+                                                self._logger.info(
+                                                    'Retry transaction submitted: TX {} | Nonce: {}',
+                                                    retry_tx_hash.hex() if hasattr(retry_tx_hash, 'hex') else retry_tx_hash,
+                                                    retry_nonce
+                                                )
+                                                # Assume success for now - nonce will be refreshed from chain
+                                                # Following relayer pattern: don't block on receipt
+                                                receipt = None
+                                                try:
+                                                    receipt = await asyncio.wait_for(
+                                                        w3.eth.wait_for_transaction_receipt(retry_tx_hash, timeout=10.0),
+                                                        timeout=10.0
+                                                    )
+                                                except (asyncio.TimeoutError, Exception):
+                                                    pass  # Receipt not available yet - fine
+                                                
+                                                if receipt and receipt.get('status') == 1:
                                                     # Success with releaseEpoch, continue normally
                                                     self._logger.info(
                                                         'Successfully released epoch {} using releaseEpoch after forceSkipEpoch failed',
                                                         epoch_block
                                                     )
-                                                    # Update nonce and continue
-                                                    self._nonce += 1
+                                                    # Refresh nonce from chain to stay in sync
+                                                    self._nonce = await w3.eth.get_transaction_count(
+                                                        settings.validator_epoch_address,
+                                                    )
                                                     epochs_processed += 1
                                                     self._force_tx = False
                                                     # Skip the error handling below since we succeeded
@@ -583,7 +641,7 @@ class EpochGenerator:
                                             'Error during fallback to releaseEpoch: {}', fallback_ex
                                         )
                                 
-                                if receipt['status'] != 1:
+                                if receipt and receipt.get('status') != 1:
                                     # Extract transaction hash and error details from receipt
                                     tx_hash_str = receipt.get('transactionHash', 'Unknown')
                                     if hasattr(tx_hash_str, 'hex'):
@@ -600,14 +658,14 @@ class EpochGenerator:
                                         issueType='EpochReleaseTxnFailed',
                                         extra=f"Transaction Hash: {tx_hash_str}\nReceipt: {receipt_json}",
                                     )
+                                else:
+                                    # No receipt or receipt status unknown - transaction was submitted
+                                    # Nonce will be refreshed from chain before next transaction
+                                    issue = None
                             else:
                                 issue = None
-                                # Log successful release
-                                if receipt and receipt.get('status') == 1:
-                                    self._logger.info(
-                                        '✅ Epoch Released! TX: {}',
-                                        tx_hash.hex() if hasattr(tx_hash, 'hex') else tx_hash
-                                    )
+                                # Transaction submitted successfully
+                                # Receipt status already logged above if available
 
                             if issue:
                                 await send_failure_notifications(client=self._client, message=issue)
@@ -634,14 +692,77 @@ class EpochGenerator:
                                 break
                             else:
                                 self._force_tx = False
-                                # Success - increment the nonce we used (force_consensus for forceSkipEpoch, validator for releaseEpoch)
+                                # Success - refresh nonces from chain to stay in sync
+                                # Don't increment locally - always fetch from chain to avoid drift
                                 if function_name == 'forceSkipEpoch':
-                                    self._force_skip_nonce += 1
+                                    self._force_skip_nonce = await w3.eth.get_transaction_count(
+                                        settings.force_consensus_address,
+                                    )
                                 else:
-                                    self._nonce += 1
+                                    self._nonce = await w3.eth.get_transaction_count(
+                                        settings.validator_epoch_address,
+                                    )
                                 epochs_processed += 1
                         except Exception as ex:
-                            # Log full exception details with traceback
+                            # Check if this is a "nonce too low" error - means transaction was already included
+                            error_str = str(ex)
+                            is_nonce_error = 'nonce too low' in error_str.lower()
+                            
+                            if is_nonce_error:
+                                # Nonce error means a previous transaction was included
+                                # Refresh nonces from chain immediately
+                                self._logger.warning(
+                                    'Nonce too low error detected - previous transaction was likely included. '
+                                    'Refreshing nonces from chain. Error: {}', ex,
+                                )
+                                # Determine which identity was used based on function_name
+                                if use_force_skip or function_name == 'forceSkipEpoch':
+                                    self._force_skip_nonce = await w3.eth.get_transaction_count(
+                                        settings.force_consensus_address,
+                                    )
+                                else:
+                                    self._nonce = await w3.eth.get_transaction_count(
+                                        settings.validator_epoch_address,
+                                    )
+                                # Sync epoch and continue - don't treat as fatal error
+                                next_epoch = await self._fetch_epoch_from_contract()
+                                if next_epoch != -1:
+                                    self._logger.info(
+                                        'Syncing begin_block_epoch after nonce error: {} -> {}',
+                                        begin_block_epoch, next_epoch
+                                    )
+                                    begin_block_epoch = next_epoch
+                                # Continue to next iteration - don't break
+                                continue
+                            
+                            # Check if this is a timeout error - transaction might still be included
+                            is_timeout_error = isinstance(ex, asyncio.TimeoutError) or 'timeout' in error_str.lower()
+                            if is_timeout_error:
+                                self._logger.warning(
+                                    'Transaction receipt wait timed out. Transaction may still be included. '
+                                    'Refreshing nonces from chain. Error: {}', ex,
+                                )
+                                # Refresh nonces in case transaction was included
+                                if use_force_skip or function_name == 'forceSkipEpoch':
+                                    self._force_skip_nonce = await w3.eth.get_transaction_count(
+                                        settings.force_consensus_address,
+                                    )
+                                else:
+                                    self._nonce = await w3.eth.get_transaction_count(
+                                        settings.validator_epoch_address,
+                                    )
+                                # Sync epoch and continue
+                                next_epoch = await self._fetch_epoch_from_contract()
+                                if next_epoch != -1:
+                                    self._logger.info(
+                                        'Syncing begin_block_epoch after timeout: {} -> {}',
+                                        begin_block_epoch, next_epoch
+                                    )
+                                    begin_block_epoch = next_epoch
+                                # Continue to next iteration
+                                continue
+                            
+                            # Log full exception details with traceback for other errors
                             self._logger.opt(exception=True).error(
                                 'Unable to release epoch, error: {}', ex,
                             )
