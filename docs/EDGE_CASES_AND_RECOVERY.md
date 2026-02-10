@@ -21,9 +21,10 @@
 **Fixed Behavior**:
 - Receipt timeout → receipt = None
 - Code detects receipt=None → verifies contract state
-- Contract at 24426899 → contract_next_epoch = 24426899
-- contract_next_epoch == release_epoch['begin'] → transaction included!
-- Updates begin_block_epoch = 24426899 + 1 = 24426900
+- Contract at 24426899 → contract_next_epoch = 24426900 (currentEpoch.end + 1)
+- contract_next_epoch > release_epoch['begin'] → 24426900 > 24426899 → TRUE → transaction included!
+- Updates begin_block_epoch = 24426900
+- Sends alert: EpochReleaseTimeout (transaction included)
 - Continues sequentially from 24426900
 
 **Recovery Guarantee**: ✅ Always recovers correctly
@@ -49,9 +50,10 @@
 **Fixed Behavior**:
 - Receipt timeout → receipt = None
 - Code detects receipt=None → verifies contract state
-- Contract at N → contract_next_epoch = N
-- contract_next_epoch == release_epoch['begin'] → transaction included!
+- Contract at N → contract_next_epoch = N + 1 (currentEpoch.end + 1)
+- contract_next_epoch > release_epoch['begin'] → N + 1 > N → TRUE → transaction included!
 - Updates begin_block_epoch = N + 1
+- Sends alert: EpochReleaseTimeout (transaction included)
 - Continues sequentially
 
 **Recovery Guarantee**: ✅ Always recovers correctly
@@ -76,10 +78,11 @@
 **Fixed Behavior**:
 - Receipt timeout → receipt = None
 - Code detects receipt=None → verifies contract state
-- Contract at N-1 → contract_next_epoch = N
-- contract_next_epoch < release_epoch['begin'] → transaction NOT included
+- Contract at N-1 → contract_next_epoch = N (currentEpoch.end + 1)
+- contract_next_epoch <= release_epoch['begin'] → N <= N → TRUE → transaction NOT included
 - Keeps begin_block_epoch = N
 - Refreshes nonce
+- Sends alert: EpochReleaseTimeout (transaction NOT included, will retry)
 - Retries in next iteration
 
 **Recovery Guarantee**: ✅ Always retries correctly
@@ -167,14 +170,14 @@
 
 ## Recovery Path Matrix
 
-| Error Type | Detection | Action | Recovery |
-|------------|-----------|--------|----------|
-| Receipt timeout, tx included | Contract verification | Update begin_block_epoch | ✅ Immediate |
-| Receipt timeout, tx not included | Contract verification | Keep begin_block_epoch, retry | ✅ Next iteration |
-| Receipt status=0, releaseEpoch | Receipt check | Sync to contract | ✅ Immediate |
-| Receipt status=0, forceSkipEpoch | Receipt check | Fallback to releaseEpoch | ✅ Immediate |
-| Nonce too low | Exception check | Refresh nonce, sync | ✅ Immediate |
-| Other exception | Exception handler | Sync to contract, wait 30s | ✅ Next iteration |
+| Error Type | Detection | Action | Alert Sent | Recovery |
+|------------|-----------|--------|------------|----------|
+| Receipt timeout, tx included | Contract verification | Update begin_block_epoch | ✅ EpochReleaseTimeout | ✅ Immediate |
+| Receipt timeout, tx not included | Contract verification | Keep begin_block_epoch, retry | ✅ EpochReleaseTimeout | ✅ Next iteration |
+| Receipt status=0, releaseEpoch | Receipt check | Sync to contract | ✅ EpochReleaseTxnFailed | ✅ Immediate |
+| Receipt status=0, forceSkipEpoch | Receipt check | Fallback to releaseEpoch | ✅ EpochReleaseTxnFailed | ✅ Immediate |
+| Nonce too low | Exception check | Refresh nonce, sync | ❌ None | ✅ Immediate |
+| Other exception | Exception handler | Sync to contract, wait 30s | ✅ EpochReleaseError | ✅ Next iteration |
 
 ## Invariants Maintained
 

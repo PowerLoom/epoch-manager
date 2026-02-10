@@ -124,9 +124,15 @@ IF nonce_error:
     
 IF timeout_error:
     refresh_nonce()
+    transaction_included = False
     contract_next_epoch = fetch_contract_epoch()
     IF contract_next_epoch > release_epoch['begin']:
+        transaction_included = True
         begin_block_epoch = contract_next_epoch
+    ELSE:
+        transaction_included = False
+        // Keep begin_block_epoch unchanged
+    send_alert('EpochReleaseTimeout', transaction_included status)
     break
     
 IF other_error:

@@ -787,49 +787,88 @@ class EpochGenerator:
                                 )
                                 # Refresh nonces
                                 if use_force_skip or function_name == 'forceSkipEpoch':
+                                    _address = settings.force_consensus_address
                                     self._force_skip_nonce = await w3.eth.get_transaction_count(
                                         settings.force_consensus_address,
                                     )
                                 else:
+                                    _address = settings.validator_epoch_address
                                     self._nonce = await w3.eth.get_transaction_count(
                                         settings.validator_epoch_address,
                                     )
                                 
                                 # CRITICAL: Verify contract state after timeout
                                 # Transaction may have been included even though receipt timed out
+                                # Wait a bit for transaction to be mined before checking contract state
+                                transaction_included = False
                                 try:
-                                    contract_next_epoch = await self._fetch_epoch_from_contract()
-                                    if contract_next_epoch != -1:
-                                        # Check if transaction was included by comparing contract state
-                                        # _fetch_epoch_from_contract() returns currentEpoch.end + 1 (next epoch to release)
-                                        # If we tried to release epoch N and transaction was included:
-                                        #   - Contract's current epoch end becomes N
-                                        #   - contract_next_epoch = N + 1
-                                        #   - contract_next_epoch > release_epoch['begin'] (N+1 > N) → TRUE
-                                        # If transaction was NOT included:
-                                        #   - Contract's current epoch end remains < N
-                                        #   - contract_next_epoch <= release_epoch['begin']
-                                        if contract_next_epoch > release_epoch['begin']:
-                                            # Transaction was included! Contract advanced past what we tried to release
-                                            self._logger.info(
-                                                'Timeout occurred but transaction was included. Contract epoch {} > release epoch {}. '
-                                                'Updating begin_block_epoch from {} to {}',
-                                                contract_next_epoch, release_epoch['begin'], begin_block_epoch, contract_next_epoch
-                                            )
-                                            begin_block_epoch = contract_next_epoch
-                                        else:
-                                            # Transaction not included - contract_next_epoch <= release_epoch['begin']
-                                            # Keep begin_block_epoch unchanged, will retry
-                                            self._logger.debug(
-                                                'Timeout occurred and transaction not included. Contract epoch {} <= release epoch {}. '
-                                                'Keeping begin_block_epoch {} for retry',
-                                                contract_next_epoch, release_epoch['begin'], begin_block_epoch
-                                            )
+                                    # Wait 2 seconds for transaction to potentially be mined
+                                    await asyncio.sleep(2)
+                                    
+                                    # Check contract state - may need multiple attempts if transaction is still pending
+                                    for attempt in range(3):
+                                        contract_next_epoch = await self._fetch_epoch_from_contract()
+                                        if contract_next_epoch != -1:
+                                            # Check if transaction was included by comparing contract state
+                                            # _fetch_epoch_from_contract() returns currentEpoch.end + 1 (next epoch to release)
+                                            # If we tried to release epoch N and transaction was included:
+                                            #   - Contract's current epoch end becomes N
+                                            #   - contract_next_epoch = N + 1
+                                            #   - contract_next_epoch > release_epoch['begin'] (N+1 > N) → TRUE
+                                            # If transaction was NOT included:
+                                            #   - Contract's current epoch end remains < N
+                                            #   - contract_next_epoch <= release_epoch['begin']
+                                            if contract_next_epoch > release_epoch['begin']:
+                                                # Transaction was included! Contract advanced past what we tried to release
+                                                transaction_included = True
+                                                self._logger.info(
+                                                    'Timeout occurred but transaction was included (attempt {}). Contract epoch {} > release epoch {}. '
+                                                    'Updating begin_block_epoch from {} to {}',
+                                                    attempt + 1, contract_next_epoch, release_epoch['begin'], begin_block_epoch, contract_next_epoch
+                                                )
+                                                begin_block_epoch = contract_next_epoch
+                                                break
+                                            elif attempt < 2:
+                                                # Transaction might still be pending - wait and retry
+                                                self._logger.debug(
+                                                    'Timeout occurred, transaction not yet included (attempt {}). Contract epoch {} <= release epoch {}. '
+                                                    'Waiting 2 seconds before retry...',
+                                                    attempt + 1, contract_next_epoch, release_epoch['begin']
+                                                )
+                                                await asyncio.sleep(2)
+                                            else:
+                                                # Transaction not included after retries - contract_next_epoch <= release_epoch['begin']
+                                                # Keep begin_block_epoch unchanged, will retry
+                                                transaction_included = False
+                                                self._logger.warning(
+                                                    'Timeout occurred and transaction NOT included after {} attempts. Contract epoch {} <= release epoch {}. '
+                                                    'Keeping begin_block_epoch {} for retry',
+                                                    attempt + 1, contract_next_epoch, release_epoch['begin'], begin_block_epoch
+                                                )
+                                                break
                                 except Exception as verify_error:
                                     self._logger.error(
                                         'Error verifying contract state after timeout: {}. Keeping current begin_block_epoch.',
                                         verify_error
                                     )
+                                    transaction_included = False  # Assume not included if verification fails
+                                
+                                # Send alert for timeout - especially if transaction was NOT included
+                                exception_details = ''.join(traceback.format_exception(type(ex), ex, ex.__traceback__))
+                                timeout_status = "Transaction included (verified via contract)" if transaction_included else "Transaction NOT included (will retry)"
+                                
+                                issue = GenericTxnIssue(
+                                    accountAddress=_address,
+                                    epochBegin=str(release_epoch['begin']),
+                                    issueType='EpochReleaseTimeout',
+                                    extra=f"Function: {function_name}\n"
+                                          f"Epoch: {release_epoch['begin']}-{release_epoch['end']}\n"
+                                          f"Timeout Status: {timeout_status}\n"
+                                          f"Exception: {str(ex)}\n"
+                                          f"Traceback:\n{exception_details}",
+                                )
+                                
+                                await send_failure_notifications(client=self._client, message=issue)
                                 
                                 # Break to retry in next outer loop iteration
                                 break
