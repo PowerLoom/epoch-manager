@@ -43,31 +43,54 @@ data_market_address = settings.data_market_address
 with open('utils/static/abi.json', 'r') as f:
     abi = json.load(f)
 
+_epoch_connector = None
+_epoch_sessions_by_endpoint = {}
+_epoch_session_patched = False
 
-def _patch_web3_session_factory(connector: TCPConnector) -> None:
-    """Patch web3's async session cache to use a shared connector (connection pooling)."""
+
+def _patch_web3_session_for_epoch_manager() -> None:
+    """Patch web3's async session cache to use TCPConnector (connection pooling). Connector and session created lazily on first request per endpoint, inside async task. Reuse same session per endpoint to avoid 'Unclosed client session' (web3 passes session=None every call; without our own reuse we'd create a new orphan session each request)."""
+    global _epoch_session_patched
+    if _epoch_session_patched:
+        return
     import web3._utils.request as request_module
     _original = async_cache_and_return_session
 
     async def _cached_session_with_connector(endpoint_uri, session=None):
-        if session is None:
-            session = ClientSession(connector=connector, raise_for_status=True)
+        global _epoch_connector, _epoch_sessions_by_endpoint
+        if endpoint_uri not in _epoch_sessions_by_endpoint:
+            if _epoch_connector is None:
+                _limits = settings.anchor_chain.rpc.connection_limits
+                _epoch_connector = TCPConnector(
+                    limit=_limits.max_connections,
+                    limit_per_host=min(30, _limits.max_connections),
+                    keepalive_timeout=_limits.keepalive_expiry,
+                )
+            _session = ClientSession(connector=_epoch_connector, raise_for_status=True)
+            _epoch_sessions_by_endpoint[endpoint_uri] = _session
+        session = _epoch_sessions_by_endpoint[endpoint_uri]
         return await _original(endpoint_uri, session)
 
     request_module.async_cache_and_return_session = _cached_session_with_connector
+    _epoch_session_patched = True
+
+
+async def _close_web3_sessions_and_connector() -> None:
+    """Close aiohttp sessions and connector to avoid 'Unclosed client session' warnings."""
+    global _epoch_sessions_by_endpoint, _epoch_connector
+    for s in _epoch_sessions_by_endpoint.values():
+        if not s.closed:
+            await s.close()
+    _epoch_sessions_by_endpoint.clear()
+    if _epoch_connector is not None:
+        await _epoch_connector.close()
+        _epoch_connector = None
 
 
 # Socket read timeout: prefer sock_read_time_out (avoids "Timeout on reading data from socket"), else request_time_out
-# TCPConnector: connection pooling for same-node reuse (relayer and epoch-manager both hit same RPC)
 _rpc = settings.anchor_chain.rpc
 _read_secs = float(_rpc.sock_read_time_out if _rpc.sock_read_time_out is not None else _rpc.request_time_out)
-_limits = _rpc.connection_limits
-_connector = TCPConnector(
-    limit=_limits.max_connections,
-    limit_per_host=min(30, _limits.max_connections),
-    keepalive_timeout=_limits.keepalive_expiry,
-)
-_patch_web3_session_factory(_connector)
+_patch_web3_session_for_epoch_manager()
 w3 = AsyncWeb3(
     AsyncHTTPProvider(
         settings.anchor_chain.rpc.full_nodes[0].url,
@@ -490,16 +513,13 @@ class EpochGenerator:
                             self.release_counter += 1
                             
                             # Identity: forceSkipEpoch requires DataMarket owner (force_consensus); releaseEpoch requires epochManager (validator).
-                            # Only use force_consensus identity when function_name is forceSkipEpoch (intentional jump).
                             if function_name == 'forceSkipEpoch':
                                 _address = settings.force_consensus_address
                                 _key = settings.force_consensus_private_key
-                                # Always fetch nonce from chain right before sending to avoid nonce drift
                                 _nonce = await w3.eth.get_transaction_count(_address)
                             else:
                                 _address = settings.validator_epoch_address
                                 _key = settings.validator_epoch_private_key
-                                # Always fetch nonce from chain right before sending to avoid nonce drift
                                 _nonce = await w3.eth.get_transaction_count(_address)
                             
                             # Submit transaction (fire-and-forget pattern like relayer)
@@ -875,24 +895,10 @@ class EpochGenerator:
                                     )
                                     transaction_included = False  # Assume not included if verification fails
                                 
-                                # Send alert for timeout - especially if transaction was NOT included
-                                exception_details = ''.join(traceback.format_exception(type(ex), ex, ex.__traceback__))
-                                timeout_status = "Transaction included (verified via contract)" if transaction_included else "Transaction NOT included (will retry)"
-                                
-                                issue = GenericTxnIssue(
-                                    accountAddress=_address,
-                                    epochBegin=str(release_epoch['begin']),
-                                    issueType='EpochReleaseTimeout',
-                                    extra=f"Function: {function_name}\n"
-                                          f"Epoch: {release_epoch['begin']}-{release_epoch['end']}\n"
-                                          f"Timeout Status: {timeout_status}\n"
-                                          f"Exception: {str(ex)}\n"
-                                          f"Traceback:\n{exception_details}",
-                                )
-                                
-                                await send_failure_notifications(client=self._client, message=issue)
-                                
-                                # Break to retry in next outer loop iteration
+                                # Alert only when we WON'T retry AND tx was not included.
+                                # - transaction_included=True: success (slow RPC), no alert.
+                                # - transaction_included=False: we will retry (break below), no alert.
+                                # If retry-exhaustion / give-up logic is added later, alert there.
                                 break
                             
                             # Log full exception details with traceback for other errors
@@ -904,7 +910,7 @@ class EpochGenerator:
                             exception_details = ''.join(traceback.format_exception(type(ex), ex, ex.__traceback__))
                             
                             issue = GenericTxnIssue(
-                                accountAddress=settings.validator_epoch_address,
+                                accountAddress=settings.force_consensus_address,
                                 epochBegin=str(epoch_block['begin']),
                                 issueType='EpochReleaseError',
                                 extra=f"Exception: {str(ex)}\nTraceback:\n{exception_details}",
@@ -987,8 +993,12 @@ def main():
     loop = uvloop.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    ticker_process = EpochGenerator()
-    loop.run_until_complete(ticker_process.run())
+    try:
+        ticker_process = EpochGenerator()
+        loop.run_until_complete(ticker_process.run())
+    finally:
+        loop.run_until_complete(_close_web3_sessions_and_connector())
+        loop.close()
 
 
 if __name__ == '__main__':

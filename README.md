@@ -11,17 +11,17 @@
       - [Configuring settings.json](#configuring-settingsjson)
   - [Monitoring and Debugging](#monitoring-and-debugging)
   - [Epoch Generation](#epoch-generation)
-  - [Force Consensus](#force-consensus)
-  - [Running just Consensus service using Docker](#running-just-consensus-service-using-docker)
+  - [Force Skip Epoch](#force-skip-epoch)
+  - [Running using Docker](#running-using-docker)
 
 
 ## Overview
 
 ![Overall Architecture](https://github.com/PowerLoom/pooler/raw/main/pooler/static/docs/assets/OverallArchitecture.png)
-Epoch Generator and Force Consensus is part of the *Admin Module* in the overall architecture. It currently serves the following important roles -
+Epoch Generator is part of the *Admin Module* in the overall architecture. It serves the following roles -
 
 1. Maintains and releases `Epoch` depending on chain and use case configuration
-2. Checks and completes consensus (if necessary) by interacting with the Protocol State contract for previously released epochs after the submission window has passed
+2. When `force_skip_epoch` is enabled, calls `forceSkipEpoch` for intentional epoch jumps (e.g. large gaps)
 3. Provides a set of APIs for metrics and system state statistics where snapshotters can report their issues and overall network health can be monitored
 
 ## Setup
@@ -44,10 +44,12 @@ There are a lot of configurations in the `settings.json` file, most of them are 
 - `anchor_chain_rpc.protcol_state_address` is the Protocol State contract address with which `EpochGenerator` interacts and releases Epochs
 - `anchor_chain_rpc.validator_epoch_address` is the EVM account address for the validator this is releasing/finalizing Epochs
 - `anchor_chain_rpc.validator_epoch_private_key` is the validator EVM account address private key
-- `anchor_chain_rpc.force_consensus_address` is the account address for the force consensus service, this doesn't need to be a validator account
-- `anchor_chain_rpc.force_consensus_private_key` is the private key for the force consensus account
+- `force_consensus_address` is the DataMarket owner account used when calling `forceSkipEpoch` (when `force_skip_epoch` is enabled)
+- `force_consensus_private_key` is the private key for that account
 
 ## Monitoring and Debugging
+
+**Alerts** (`slack_url` in settings): `EpochReleaseError` is alerted immediately. RPC timeouts (`EpochReleaseTimeout`) are not alerted—we retry in the next loop and do not spam the channel.
 
 Login to the Onchain Consensus Docker container using `docker exec -it <container_id> bash` (use `docker ps` to see running containers) and use the following commands for monitoring and debugging:
 
@@ -73,17 +75,14 @@ The size of an epoch is configurable. Let that be referred to as `size(E)`.
 The Epoch Release process is explained in detail in the sequence diagram below
 ![Epoch Generator Sequence Diagram](/docs/images/epoch_generator.png)
 
-## Force Consensus
+## Force Skip Epoch
 
-Force consensus is an optional mechanism that can be run by anyone in the network and is designed to trigger consensus checks for projects that didn't reach consensus automatically with a 51% majority within the submission window. This will force consensus if possible if the project submissions meet all internal criteria for consensus after the submission window is closed.
+When `force_skip_epoch` is enabled in chain config, the epoch generator can call `forceSkipEpoch` (DataMarket owner only) for intentional epoch jumps—e.g. when there are large gaps. This is integrated into the epoch release flow, not a separate service.
 
-Force Consensus works slightly differently than Epoch Generator and is heavily optimized to handle a lot of projects. The sequence diagram explaining the flow is given below
-![Force Consensus Sequence Diagram](/docs/images/force_consensus.png)
+Transaction tasks are processed in parallel; see [txn_task diagram](/docs/images/txn_task.png).
 
-Transaction tasks are then processed parallelly using the following flow
-![Force Consensus Transaction Task Processing](/docs/images/txn_task.png)
-## Running just Consensus service using Docker
-If you want to deploy consensus service for some reason, you can do so by running the following command
+## Running using Docker
+To build and run the epoch manager:
 
 ```bash
 ./build.sh
