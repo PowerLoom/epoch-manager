@@ -8,6 +8,9 @@ import resource
 
 import aiorwlock
 import uvloop
+from aiohttp import ClientSession
+from aiohttp import ClientTimeout as AiohttpClientTimeout
+from aiohttp import TCPConnector
 from httpx import AsyncClient
 from httpx import AsyncHTTPTransport
 from httpx import Limits
@@ -15,6 +18,7 @@ from httpx import Timeout
 from redis import asyncio as aioredis
 from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
+from web3._utils.request import async_cache_and_return_session
 
 from tenacity import retry
 from tenacity import retry_if_exception_type
@@ -36,7 +40,43 @@ protocol_state_contract_address = settings.protocol_state_address
 # load abi from json file and create contract object
 with open('utils/static/abi.json', 'r') as f:
     abi = json.load(f)
-w3 = AsyncWeb3(AsyncHTTPProvider(settings.anchor_chain.rpc.full_nodes[0].url))
+
+
+def _patch_web3_session_factory(connector: TCPConnector) -> None:
+    """Patch web3's async session cache to use a shared connector (connection pooling)."""
+    import web3._utils.request as request_module
+    _original = async_cache_and_return_session
+
+    async def _cached_session_with_connector(endpoint_uri, session=None):
+        if session is None:
+            session = ClientSession(connector=connector, raise_for_status=True)
+        return await _original(endpoint_uri, session)
+
+    request_module.async_cache_and_return_session = _cached_session_with_connector
+
+
+_rpc = settings.anchor_chain.rpc
+_read_secs = float(_rpc.sock_read_time_out if _rpc.sock_read_time_out is not None else _rpc.request_time_out)
+_limits = _rpc.connection_limits
+_connector = TCPConnector(
+    limit=_limits.max_connections,
+    limit_per_host=min(30, _limits.max_connections),
+    keepalive_timeout=_limits.keepalive_expiry,
+)
+_patch_web3_session_factory(_connector)
+w3 = AsyncWeb3(
+    AsyncHTTPProvider(
+        settings.anchor_chain.rpc.full_nodes[0].url,
+        request_kwargs={
+            'timeout': AiohttpClientTimeout(
+                total=_read_secs + 2.0,
+                connect=min(_read_secs, 10),
+                sock_read=_read_secs,
+                sock_connect=min(_read_secs, 10),
+            )
+        },
+    )
+)
 
 protocol_state_contract = w3.eth.contract(
     address=protocol_state_contract_address, abi=abi,

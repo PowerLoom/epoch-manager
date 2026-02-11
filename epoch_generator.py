@@ -10,7 +10,9 @@ from signal import SIGQUIT
 from signal import SIGTERM
 
 import uvloop
+from aiohttp import ClientSession
 from aiohttp import ClientTimeout as AiohttpClientTimeout
+from aiohttp import TCPConnector
 from httpx import AsyncClient
 from httpx import AsyncHTTPTransport
 from httpx import Limits
@@ -22,6 +24,7 @@ from tenacity import wait_random_exponential
 from web3 import AsyncHTTPProvider
 from web3 import AsyncWeb3
 from web3 import Web3
+from web3._utils.request import async_cache_and_return_session
 
 from data_models import GenericTxnIssue
 from exceptions import GenericExitOnSignal
@@ -40,21 +43,40 @@ data_market_address = settings.data_market_address
 with open('utils/static/abi.json', 'r') as f:
     abi = json.load(f)
 
-# Configure timeout with granular settings for better control
-# total: total timeout for entire operation
-# connect: timeout for establishing connection
-# sock_read: timeout for reading data from socket
-# sock_connect: timeout for socket connection
-timeout_seconds = settings.anchor_chain.rpc.request_time_out
+
+def _patch_web3_session_factory(connector: TCPConnector) -> None:
+    """Patch web3's async session cache to use a shared connector (connection pooling)."""
+    import web3._utils.request as request_module
+    _original = async_cache_and_return_session
+
+    async def _cached_session_with_connector(endpoint_uri, session=None):
+        if session is None:
+            session = ClientSession(connector=connector, raise_for_status=True)
+        return await _original(endpoint_uri, session)
+
+    request_module.async_cache_and_return_session = _cached_session_with_connector
+
+
+# Socket read timeout: prefer sock_read_time_out (avoids "Timeout on reading data from socket"), else request_time_out
+# TCPConnector: connection pooling for same-node reuse (relayer and epoch-manager both hit same RPC)
+_rpc = settings.anchor_chain.rpc
+_read_secs = float(_rpc.sock_read_time_out if _rpc.sock_read_time_out is not None else _rpc.request_time_out)
+_limits = _rpc.connection_limits
+_connector = TCPConnector(
+    limit=_limits.max_connections,
+    limit_per_host=min(30, _limits.max_connections),
+    keepalive_timeout=_limits.keepalive_expiry,
+)
+_patch_web3_session_factory(_connector)
 w3 = AsyncWeb3(
     AsyncHTTPProvider(
         settings.anchor_chain.rpc.full_nodes[0].url,
         request_kwargs={
             'timeout': AiohttpClientTimeout(
-                total=timeout_seconds,
-                connect=min(timeout_seconds, 10),  # Connection timeout (max 10s)
-                sock_read=timeout_seconds,  # Socket read timeout
-                sock_connect=min(timeout_seconds, 10),  # Socket connect timeout (max 10s)
+                total=_read_secs + 2.0,
+                connect=min(_read_secs, 10),
+                sock_read=_read_secs,
+                sock_connect=min(_read_secs, 10),
             )
         },
     )

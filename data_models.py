@@ -53,11 +53,13 @@ class ConnectionLimits(BaseModel):
 
 
 class RPCConfigBase(BaseModel):
+    """RPC configuration. Timeout precedence: sock_read_time_out overrides request_time_out when both set."""
     full_nodes: List[RPCNodeConfig]
     archive_nodes: Optional[List[RPCNodeConfig]]
     force_archive_blocks: Optional[int]
     retry: int
     request_time_out: int
+    sock_read_time_out: Optional[int] = None
     connection_limits: ConnectionLimits
 
 
