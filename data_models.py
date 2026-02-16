@@ -53,11 +53,13 @@ class ConnectionLimits(BaseModel):
 
 
 class RPCConfigBase(BaseModel):
+    """RPC configuration. Timeout precedence: sock_read_time_out overrides request_time_out when both set."""
     full_nodes: List[RPCNodeConfig]
     archive_nodes: Optional[List[RPCNodeConfig]]
     force_archive_blocks: Optional[int]
     retry: int
     request_time_out: int
+    sock_read_time_out: Optional[int] = None
     connection_limits: ConnectionLimits
 
 
@@ -72,6 +74,8 @@ class ChainConfig(BaseModel):
     rpc: RPCConfigBase
     chain_id: int
     epoch: EpochConfig
+    polling_interval: int
+    force_skip_epoch: bool = False  # Use forceSkipEpoch for large gaps (default: false)
 
 
 class AnchorChainConfig(BaseModel):
@@ -101,6 +105,7 @@ class SettingsConf(BaseModel):
     rlimit: RLimit
     ticker_begin_block: Optional[int]
     protocol_state_address: str
+    data_market_address: str
     validator_epoch_address: str
     validator_epoch_private_key: str
     force_consensus_address: str

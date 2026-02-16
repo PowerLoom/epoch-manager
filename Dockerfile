@@ -9,7 +9,7 @@ RUN pm2 install pm2-logrotate && pm2 set pm2-logrotate:compress true && pm2 set 
 COPY poetry.lock pyproject.toml ./
 
 # Install the Python dependencies
-RUN poetry install --no-dev
+RUN poetry install --no-root
 
 # Copy the rest of the application's files
 COPY . .
